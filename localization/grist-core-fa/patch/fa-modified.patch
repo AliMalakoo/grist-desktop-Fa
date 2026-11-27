@@ -1,0 +1,2621 @@
+diff --git a/app/client/components/CalendarWrapper.ts b/app/client/components/CalendarWrapper.ts
+index cf746d4..a2ed981 100644
+--- a/app/client/components/CalendarWrapper.ts
++++ b/app/client/components/CalendarWrapper.ts
+@@ -1,6 +1,6 @@
+ import { CALENDAR_NAME, CalendarDate } from "app/client/components/CalendarSource";
+ import { loadToastUICalendar, ToastUICalendarModule } from "app/client/lib/imports";
+-import { makeT } from "app/client/lib/localization";
++import { detectCurrentLang, makeT } from "app/client/lib/localization";
+ import { theme } from "app/client/ui2018/cssVars";
+ import { ColumnsToMap } from "app/plugin/CustomSectionAPI";
+ 
+@@ -256,7 +256,7 @@ export class CalendarWrapper extends Disposable {
+     const current = cal.getDate().toDate();
+     let title: string;
+     if (view === "day") {
+-      title = current.toLocaleDateString(undefined, {
++      title = current.toLocaleDateString(getTitleLocale(), {
+         weekday: "short", day: "numeric", month: "short", year: "numeric",
+       });
+     } else if (view === "week") {
+@@ -268,9 +268,10 @@ export class CalendarWrapper extends Disposable {
+         { day: "numeric" } :
+         (sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
+       const endFmt: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
+-      title = `${start.toLocaleDateString(undefined, startFmt)} - ${end.toLocaleDateString(undefined, endFmt)}`;
++      title = `${start.toLocaleDateString(getTitleLocale(), startFmt)} - ` +
++        `${end.toLocaleDateString(getTitleLocale(), endFmt)}`;
+     } else {
+-      title = current.toLocaleDateString(undefined, { month: "long", year: "numeric" });
++      title = current.toLocaleDateString(getTitleLocale(), { month: "long", year: "numeric" });
+     }
+     this._titleDom.textContent = title;
+   }
+@@ -599,7 +600,7 @@ export const cssCalendarContainer = styled("div", `
+ type CalendarThemeOption = NonNullable<Options["theme"]>;
+ 
+ type TimeFormat = "12h" | "24h";
+-type WeekStart = "sun" | "mon";
++type WeekStart = "sun" | "mon" | "sat";
+ 
+ const HOURS_PER_DAY = 24;
+ 
+@@ -638,18 +639,22 @@ function formatSelectionLabel(text: string, format: TimeFormat): string | null {
+   return null;
+ }
+ 
+-// TUI's startDayOfWeek index: 0=Sun..6=Sat. We only distinguish Sunday/Monday.
++// TUI's startDayOfWeek index: 0=Sun..6=Sat.
+ function weekStartToIndex(start: WeekStart): number {
+-  return start === "mon" ? 1 : 0;
++  return start === "sat" ? 6 : (start === "mon" ? 1 : 0);
+ }
+ 
+-// The week start: Monday if the browser locale starts its week on Monday, otherwise Sunday.
+-// (Intl: 1=Mon..7=Sun; a locale firstDay of 7 means Sunday.)
++/**
++ * The week start: Saturday where the interface language starts its week on Saturday -- every
++ * Persian and Arabic reader expects the week to open on شنبه -- else Monday or Sunday, following
++ * the locale (Intl: 1=Mon..7=Sun; a firstDay of 7 means Sunday).
++ */
+ function getLocaleWeekStart(): WeekStart {
+   try {
+-    const locale = new Intl.Locale(navigator.language || "en");
++    const locale = new Intl.Locale(getUiLang() || navigator.language || "en");
+     const weekInfo = (locale as any).getWeekInfo?.() ?? (locale as any).weekInfo;
+     if (weekInfo?.firstDay !== undefined) {
++      if (weekInfo.firstDay === 6) { return "sat"; }
+       return weekInfo.firstDay === 1 ? "mon" : "sun";
+     }
+   } catch (e) {
+@@ -658,6 +663,26 @@ function getLocaleWeekStart(): WeekStart {
+   return "sun";
+ }
+ 
++/**
++ * The interface language, which is not necessarily the browser's: a Persian Grist shows a Persian
++ * calendar even in an English browser. Date formatting in this view follows it, so that month
++ * names and digits are the ones the reader is looking at.
++ */
++function getUiLang(): string {
++  return detectCurrentLang();
++}
++
++/**
++ * The locale to format the header with: the interface language, pinned to the Gregorian calendar.
++ * Persian is the case that matters -- Intl would otherwise render "Nov 2026" in Jalali terms
++ * (آذر ۱۴۰۵), which would not match the month the grid is actually showing.
++ */
++function getTitleLocale(): string {
++  const lng = getUiLang();
++  if (!lng || lng === "en") { return "en"; }
++  return `${lng}-u-ca-gregory`;
++}
++
+ // The time format: 24h if the browser locale formats an afternoon time without an am/pm marker,
+ // otherwise 12h.
+ function getLocaleTimeFormat(): TimeFormat {
+diff --git a/app/client/lib/localization.ts b/app/client/lib/localization.ts
+index 6780082..8e0737c 100644
+--- a/app/client/lib/localization.ts
++++ b/app/client/lib/localization.ts
+@@ -1,4 +1,6 @@
+ import { hooks } from "app/client/Hooks";
++import { languageDir } from "app/common/LanguageDirection";
++import { setJalaliUiLangOverride, shouldUseJalali } from "app/common/jalali";
+ import { getGristConfig } from "app/common/urlUtils";
+ 
+ import { DomContents } from "grainjs";
+@@ -10,6 +12,9 @@ export async function setupLocale() {
+   const supportedLngs = getGristConfig().supportedLngs ?? ["en"];
+   const lng = detectCurrentLang();
+   const ns = getGristConfig().namespaces ?? ["client"];
++  // Mirror the language on the root element before anything is rendered: the direction decides
++  // how the whole interface is laid out, and a late change would be visible as a jump.
++  applyLanguageToDocument(lng);
+   // Initialize localization plugin
+   try {
+     // We don't await this promise, as it is resolved synchronously due to initImmediate: false.
+@@ -64,6 +69,33 @@ export async function setupLocale() {
+   }
+ }
+ 
++/**
++ * Records the interface language on the root element, and with it the writing direction and the
++ * calendar to use. CSS keys off [dir] and the .grist-rtl class (see app/client/ui/Rtl.css);
++ * app/common/jalali.ts reads the lang attribute, which is how shared code (formatters, parsers)
++ * finds out what the user is reading without having to import the i18n module.
++ */
++export function applyLanguageToDocument(lng: string) {
++  const html = document.documentElement;
++  const dir = languageDir(lng);
++  // The calendar decision must be made about `lng`, not about whatever <html lang> happens to say
++  // a moment before the attribute is updated, so it is passed in explicitly.
++  setJalaliUiLangOverride(lng);
++  try {
++    html.setAttribute("lang", lng);
++    html.setAttribute("dir", dir);
++    html.classList.toggle("grist-rtl", dir === "rtl");
++    html.setAttribute("data-calendar", shouldUseJalali(null, lng) ? "jalali" : "gregorian");
++  } finally {
++    setJalaliUiLangOverride(null);
++  }
++}
++
++/** Whether the interface is currently mirrored (Persian, Arabic, Hebrew, ...). */
++export function isRtlInterface(): boolean {
++  return document.documentElement.getAttribute("dir") === "rtl";
++}
++
+ export function detectCurrentLang() {
+   const { userLocale, supportedLngs } = getGristConfig();
+   const detected = userLocale ||
+diff --git a/app/client/models/DocModel.ts b/app/client/models/DocModel.ts
+index 3ac935d..bece6a7 100644
+--- a/app/client/models/DocModel.ts
++++ b/app/client/models/DocModel.ts
+@@ -36,6 +36,7 @@ import { KoSaveableObservable } from "app/client/models/modelUtil";
+ import * as rowset from "app/client/models/rowset";
+ import { TableData } from "app/client/models/TableData";
+ import { isRefListType, RecalcWhen, RefListValue } from "app/common/gristTypes";
++import { setJalaliDocLocale } from "app/common/jalali";
+ import { isNonNullish } from "app/common/gutil";
+ import { isHiddenTable, isSummaryTable } from "app/common/isHiddenTable";
+ import { canEdit } from "app/common/roles";
+@@ -205,6 +206,13 @@ export class DocModel extends Disposable {
+ 
+     this.docInfoRow = this.docInfo.getRowModel(1);
+ 
++    // Which calendar dates use is a property of the document (its locale, e.g. fa-IR), but it has
++    // to be visible to shared code that has no handle on the document -- notably the date parsing
++    // behind cell input and pasting. Keep the shared preference in step with the document.
++    const docLocale = ko.pureComputed(() => this.docInfoRow.documentSettingsJson()?.locale);
++    setJalaliDocLocale(docLocale());
++    this.autoDispose(docLocale.subscribe((locale) => setJalaliDocLocale(locale)));
++
+     // An observable array of all tables, sorted by tableId, with no exclusions.
+     this.allTables = this.autoDispose(this._createAllTablesArray());
+ 
+diff --git a/app/client/widgets/DateEditor.ts b/app/client/widgets/DateEditor.ts
+index 49b75d2..734bf9a 100644
+--- a/app/client/widgets/DateEditor.ts
++++ b/app/client/widgets/DateEditor.ts
+@@ -1,9 +1,20 @@
+ import { CommandGroup, createGroup } from "app/client/components/commands";
+ import { loadScript } from "app/client/lib/loadScript";
+ import { detectCurrentLang } from "app/client/lib/localization";
++import { JalaliPickerOptions, buildJalaliPicker } from "app/client/ui/JalaliDatePicker";
+ import { FieldOptions } from "app/client/widgets/NewBaseEditor";
+ import { NTextEditor } from "app/client/widgets/NTextEditor";
+ import { CellValue } from "app/common/DocActions";
++import {
++  formatJalaliDatePart,
++  gregorianToJalali,
++  formatJalaliMoment,
++  jalaliFormatOptions,
++  jalaliWeekdayIndex,
++  JalaliDate,
++  splitDateFormat,
++  shouldUseJalali,
++} from "app/common/jalali";
+ import { parseDate, TWO_DIGIT_YEAR_THRESHOLD } from "app/common/parseDate";
+ 
+ import { dom } from "grainjs";
+@@ -21,13 +32,21 @@ monkeyPatchDatepicker();
+ /**
+  * DateEditor - Editor for Date type. Includes a dropdown datepicker.
+  *  See reference: http://bootstrap-datepicker.readthedocs.org/en/latest/index.html
++ *
++ * In documents that use the Jalali (Persian solar) calendar, the cell shows and takes Jalali
++ * dates, and the drop-down is Grist's own calendar (app/client/ui/JalaliDatePicker.ts) instead of
++ * bootstrap-datepicker, which has no way to display another calendar. Only the *presentation*
++ * changes: what is stored is the same Gregorian timestamp the data engine works with, so a
++ * document can mix columns on either calendar, and formulas, filters and exports are unaffected.
+  */
+ export class DateEditor extends NTextEditor {
+   protected safeFormat: string;     // Format that specifies a complete date.
++  protected jalali: boolean;        // Whether to read and write dates on the Jalali calendar.
+ 
+   private _dateFormat: string | undefined = this.options.field.widgetOptionsJson.peek().dateFormat;
+   private _locale = detectCurrentLang();
+   private _keyboardNav = false;     // Whether keyboard navigation is active for the datepicker.
++  private _jalaliPicker: HTMLElement | null = null;
+ 
+   constructor(
+     options: FieldOptions,
+@@ -37,13 +56,14 @@ export class DateEditor extends NTextEditor {
+ 
+     // Update moment format string to represent a date unambiguously.
+     this.safeFormat = makeFullMomentFormat(this._dateFormat || "");
++    this.jalali = shouldUseJalali(this.options.field.widgetOptionsJson.peek().jalali);
+ 
+     // Set placeholder to current date(time), unless in read-only mode.
+     if (!options.readonly) {
+       // Use the default local timezone to format the placeholder date.
+       // TODO: this.timezone is better for DateTime; gristDoc.docInfo.timezone.peek() is better for Date.
+       const defaultTimezone = moment.tz.guess();
+-      const placeholder = moment.tz(defaultTimezone).format(this.safeFormat);
++      const placeholder = this._formatMoment(moment.tz(defaultTimezone), this.safeFormat);
+       this.textInput.setAttribute("placeholder", placeholder);
+     }
+ 
+@@ -60,8 +80,12 @@ export class DateEditor extends NTextEditor {
+         datepickerFocus: () => { this._allowKeyboardNav(true); },
+       };
+       const datepickerCommandGroup = this.autoDispose(createGroup(datepickerCommands, this, true));
+-      this._attachDatePicker(datepickerCommandGroup)
+-        .catch(e => console.error("Error attaching datepicker", e));
++      if (this.jalali) {
++        this._attachJalaliPicker();
++      } else {
++        this._attachDatePicker(datepickerCommandGroup)
++          .catch(e => console.error("Error attaching datepicker", e));
++      }
+     }
+   }
+ 
+@@ -69,6 +93,7 @@ export class DateEditor extends NTextEditor {
+     const timestamp = parseDate(this.textInput.value, {
+       dateFormat: this.safeFormat,
+       timezone: this.timezone,
++      jalali: this.jalali,
+     });
+     return timestamp !== null ? timestamp : this.textInput.value;
+   }
+@@ -76,22 +101,94 @@ export class DateEditor extends NTextEditor {
+   // Moment value formatting helper.
+   protected formatValue(value: CellValue, formatString: string | undefined, shouldFallBackToValue: boolean) {
+     if (typeof value === "number" && formatString) {
+-      return moment.tz(value * 1000, this.timezone).format(formatString);
++      return this._formatMoment(moment.tz(value * 1000, this.timezone), formatString);
+     } else {
+       // If value is AltText, return it unchanged. This way we can see it and edit in the editor.
+       return (shouldFallBackToValue && typeof value === "string") ? value : "";
+     }
+   }
+ 
++  /**
++   * Formats a moment in the calendar this column uses. Time-only formats are left to moment:
++   * the Jalali calendar has no say over the time of day, and the time editor parses what moment
++   * writes back.
++   */
++  protected _formatMoment(time: moment.Moment, formatString: string): string {
++    if (this.jalali && splitDateFormat(formatString).date) {
++      const jalali = formatJalaliMoment(time, formatString, jalaliFormatOptions());
++      if (jalali !== null) { return jalali; }
++    }
++    return time.format(formatString);
++  }
++
+   // Helper to allow/disallow keyboard navigation within the datepicker.
+   private _allowKeyboardNav(bool: boolean) {
++    // With the Jalali picker the calendar handles its own keys, and there is no bootstrap
++    // datepicker instance to reconfigure; the command group is harmless to leave installed.
++    const datepicker = $(this.textInput).data().datepicker;
++    if (!datepicker) { return; }
+     if (this._keyboardNav !== bool) {
+       this._keyboardNav = bool;
+-      $(this.textInput).data().datepicker.o.keyboardNavigation = bool;
++      datepicker.o.keyboardNavigation = bool;
+       // Force parse must be turned on with keyboard navigation, since it forces the highlighted date
+       // to be used when enter is pressed. Otherwise, keyboard date selection will have no effect.
+-      $(this.textInput).data().datepicker.o.forceParse = bool;
++      datepicker.o.forceParse = bool;
++    }
++  }
++
++  /**
++   * Shows the Jalali calendar under the input. The picked date is written into the input in the
++   * column's own format, and the editor saves it from there -- the same route a typed date takes,
++   * so the time zone and time of day keep being the editor's business rather than the calendar's.
++   */
++  private _attachJalaliPicker() {
++    const options: JalaliPickerOptions = {
++      initial: this._currentJalaliDate(),
++      persianDigits: true,
++      onPick: (j: JalaliDate) => {
++        this.textInput.value = this._formatJalali(j);
++        this._closeJalaliPicker();
++        this.textInput.focus();
++        this.onInput();
++      },
++      onClose: () => { this._closeJalaliPicker(); this.textInput.focus(); },
++    };
++    const picker = buildJalaliPicker(options);
++    picker.classList.add("clipboard_allow_focus");
++    this._jalaliPicker = picker;
++    // Put it next to the editor's own box: .cell_editor is the positioned ancestor, so the
++    // calendar hangs below the cell without being clipped by the editor's overflow.
++    (this.getDom() || this.cellEditorDiv).appendChild(picker);
++    this.onDispose(() => this._closeJalaliPicker());
++  }
++
++  private _closeJalaliPicker() {
++    if (this._jalaliPicker) {
++      this._jalaliPicker.remove();
++      this._jalaliPicker = null;
++    }
++  }
++
++  /** Formats a Jalali date with this column's own format, e.g. "۱۴۰۵-۰۹-۰۶". */
++  private _formatJalali(j: JalaliDate): string {
++    const weekday = jalaliWeekdayIndex(j.jy, j.jm, j.jd);
++    const {date} = splitDateFormat(this.safeFormat);
++    return formatJalaliDatePart(j, weekday, date, jalaliFormatOptions());
++  }
++
++  /** The date currently in the input, in the Jalali calendar, or null if it doesn't read as one. */
++  private _currentJalaliDate(): JalaliDate | null {
++    const value = this.options.cellValue;
++    if (typeof value === "number") {
++      const time = moment.tz(value * 1000, this.timezone);
++      return gregorianToJalali(time.year(), time.month() + 1, time.date());
+     }
++    const text = this.textInput.value;
++    if (!text) { return null; }
++    const timestamp = parseDate(text, {dateFormat: this.safeFormat, timezone: this.timezone, jalali: true});
++    if (timestamp === null) { return null; }
++    const time = moment.tz(timestamp * 1000, this.timezone);
++    return gregorianToJalali(time.year(), time.month() + 1, time.date());
+   }
+ 
+   // Attach the datepicker.
+diff --git a/app/client/widgets/DateTextBox.js b/app/client/widgets/DateTextBox.js
+index fc7ed42..d13242b 100644
+--- a/app/client/widgets/DateTextBox.js
++++ b/app/client/widgets/DateTextBox.js
+@@ -14,6 +14,10 @@ const {cssTextInput} = require("app/client/ui2018/editableLabel");
+ const {dom: gdom, styled, fromKo} = require("grainjs");
+ const {select} = require("app/client/ui2018/menus");
+ const {dateFormatOptions} = require("app/common/parseDate");
++const {shouldUseJalali} = require("app/common/jalali");
++const {makeT} = require("app/client/lib/localization");
++
++const t = makeT("DateTextBox");
+ 
+ /**
+  * DateTextBox - The most basic widget for displaying simple date information.
+@@ -40,6 +44,13 @@ function DateTextBox(field) {
+     }
+   }));
+ 
++  // Whether dates are shown (and typed) in the Jalali calendar rather than the Gregorian one.
++  // Absent means "follow the document's language", which is what makes a Persian document use a
++  // Persian calendar without anyone touching this; true/false pin it for this column.
++  this.jalali = this.field.config.options.prop("jalali");
++  this.jalaliEffective = this.autoDispose(ko.pureComputed(() => shouldUseJalali(this.jalali())));
++  this._setUpJalaliToggle();
++
+   // An observable that always returns `UTC`, eases DateTimeEditor inheritance.
+   this.timezone = ko.observable("UTC");
+ }
+@@ -59,10 +70,52 @@ DateTextBox.prototype.buildDateConfigDom = function() {
+       return cssRow(dom(
+         textbox(this.dateFormat, { disabled }),
+         dom.testId("Widget_dateCustomFormat")));
+-    })
++    }),
++    this.buildJalaliConfigDom()
+   );
+ };
+ 
++/**
++ * The calendar selector: a plain checkbox, because it is a yes/no choice rather than a format, and
++ * because leaving it unticked means "use the document's language", which is the behaviour a Persian
++ * document gets out of the box.
++ */
++DateTextBox.prototype.buildJalaliConfigDom = function() {
++  const disabled = this.field.config.options.disabled("jalali");
++  return dom("div",
++    cssLabel(t("Calendar")),
++    cssRow(dom(
++      kf.checkbox(this.jalaliToggle, { disabled },
++        dom("span.jjp-toggle-label", kd.computed(() => this.jalaliEffective() ?
++          t("Jalali (Persian) calendar") : t("Gregorian calendar"))),
++      ),
++      dom.testId("Widget_dateJalali"),
++    )),
++    cssRow(dom("span.jjp-toggle-hint", kd.computed(() =>
++      (this.jalali() === null || this.jalali() === undefined) ?
++      t("Follows the document language. Dates are always stored as real dates; only how they are " +
++        "shown and typed changes.") :
++      t("Set for this column only; it overrides the document language.")))
++    )
++  );
++};
++
++/**
++ * Read/write pair behind the checkbox. It reads the *effective* state, so what is ticked matches
++ * what the grid shows. Writing is always explicit: unticking a column in a Persian document has to
++ * store `jalali: false` rather than clearing the option, which would make the language switch the
++ * calendar straight back on.
++ */
++DateTextBox.prototype._setUpJalaliToggle = function() {
++  if (this.jalaliToggle) { return; }
++  this.jalaliToggle = ko.computed({
++    owner: this,
++    read: () => this.jalaliEffective(),
++    write: (val) => this.field.config.options.update({jalali: Boolean(val)}),
++  });
++  this.autoDispose(this.jalaliToggle);
++};
++
+ DateTextBox.prototype.buildConfigDom = function() {
+   return dom("div",
+     this.buildDateConfigDom(),
+diff --git a/app/client/widgets/DateTimeEditor.ts b/app/client/widgets/DateTimeEditor.ts
+index d83abe2..d8466f0 100644
+--- a/app/client/widgets/DateTimeEditor.ts
++++ b/app/client/widgets/DateTimeEditor.ts
+@@ -95,6 +95,7 @@ export class DateTimeEditor extends DateEditor {
+       time: time,
+       timeFormat: this._timeFormat,
+       timezone: this.timezone,
++      jalali: this.jalali,
+     });
+     return timestamp !== null ? timestamp :
+       (date && time ? `${date} ${time}` : date || time);
+diff --git a/app/client/widgets/UserType.ts b/app/client/widgets/UserType.ts
+index 0cc95e4..fc59d06 100644
+--- a/app/client/widgets/UserType.ts
++++ b/app/client/widgets/UserType.ts
+@@ -165,6 +165,8 @@ export const typeDefs: any = {
+           dateFormat: "YYYY-MM-DD",
+           isCustomDateFormat: false,
+           alignment: "left",
++          // null means "follow the document language"; true/false pin the calendar for this column.
++          jalali: null,
+         },
+       },
+     },
+@@ -184,6 +186,7 @@ export const typeDefs: any = {
+           isCustomDateFormat: false,
+           isCustomTimeFormat: false,
+           alignment: "left",
++          jalali: null,               // See the Date widget above.
+         },
+       },
+     },
+diff --git a/app/common/ValueFormatter.ts b/app/common/ValueFormatter.ts
+index 05365ad..e4b3db7 100644
+--- a/app/common/ValueFormatter.ts
++++ b/app/common/ValueFormatter.ts
+@@ -7,6 +7,7 @@ import { getReferencedTableId, isList } from "app/common/gristTypes";
+ import * as gutil from "app/common/gutil";
+ import { isHiddenTable } from "app/common/isHiddenTable";
+ import { buildNumberFormat, NumberFormatOptions } from "app/common/NumberFormat";
++import { formatJalaliMoment, jalaliFormatOptions, shouldUseJalali } from "app/common/jalali";
+ import { createParserOrFormatterArguments, ReferenceParsingOptions } from "app/common/ValueParser";
+ import { GristObjCode } from "app/plugin/GristData";
+ import { decodeObject, GristDateTime } from "app/plugin/objtypes";
+@@ -142,11 +143,20 @@ export interface DateFormatOptions {
+   dateFormat?: string;
+ }
+ 
++export interface JalaliDateFormatOptions extends DateFormatOptions {
++  /** Per-column override of the calendar Grist would otherwise pick for this document. */
++  jalali?: boolean;
++}
++
+ class DateFormatter extends BaseFormatter {
+   protected _dateTimeFormat: string;
+   private _timezone: string;
++  private _jalali: boolean;
+ 
+-  constructor(type: string, widgetOpts: DateFormatOptions, docSettings: DocumentSettings, timezone: string = "UTC") {
++  constructor(
++    type: string, widgetOpts: JalaliDateFormatOptions, docSettings: DocumentSettings,
++    timezone: string = "UTC",
++  ) {
+     super(type, widgetOpts, docSettings);
+     // Allow encoded dates/datetimes ([d, number] or [D, number, timezone])
+     // which are found in formula columns of type Any,
+@@ -165,6 +175,10 @@ class DateFormatter extends BaseFormatter {
+     );
+     this._dateTimeFormat = widgetOpts.dateFormat || "YYYY-MM-DD";
+     this._timezone = timezone;
++    // Documents written in Persian (and columns that ask for it) show dates on the Jalali
++    // calendar. The value stored is unchanged -- a Gregorian timestamp -- so this only affects
++    // how it is rendered.
++    this._jalali = shouldUseJalali(widgetOpts.jalali, this.docSettings && this.docSettings.locale);
+   }
+ 
+   public format(value: any): string {
+@@ -182,6 +196,12 @@ class DateFormatter extends BaseFormatter {
+     // Now `value` is a number
+ 
+     const time = moment.tz(value * 1000, timezone);
++    if (this._jalali) {
++      const jalali = formatJalaliMoment(time, this._dateTimeFormat, jalaliFormatOptions());
++      if (jalali !== null) {
++        return jalali;
++      }
++    }
+     return time.format(this._dateTimeFormat);
+   }
+ }
+diff --git a/app/common/WidgetOptions.ts b/app/common/WidgetOptions.ts
+index dc0dc9f..c835909 100644
+--- a/app/common/WidgetOptions.ts
++++ b/app/common/WidgetOptions.ts
+@@ -6,6 +6,8 @@ export interface WidgetOptions extends NumberFormatOptions {
+   alignment?: "left" | "center" | "right";
+   dateFormat?: string;
+   timeFormat?: string;
++  /** Show and read Date/DateTime values on the Jalali (Persian solar) calendar. */
++  jalali?: boolean;
+   widget?: "HyperLink";
+   choices?: string[];
+ }
+diff --git a/app/common/parseDate.ts b/app/common/parseDate.ts
+index 4543c09..d6757a7 100644
+--- a/app/common/parseDate.ts
++++ b/app/common/parseDate.ts
+@@ -1,4 +1,5 @@
+ import { getDistinctValues, isNonNullish } from "app/common/gutil";
++import { jalaliDateStringToGregorian, shouldUseJalali } from "app/common/jalali";
+ 
+ import guessFormat from "@gristlabs/moment-guess/dist/bundle.js";
+ import escapeRegExp from "lodash/escapeRegExp";
+@@ -89,6 +90,19 @@ interface ParseOptions {
+   dateFormat?: string;
+   timeFormat?: string;
+   timezone?: string;
++  /** True to read the input on the Jalali calendar, false to force the Gregorian one. */
++  jalali?: boolean;
++}
++
++/**
++ * Rewrites a date typed on the Jalali calendar (e.g. "1405/09/06", "۶ آذر ۱۴۰۵") as the
++ * equivalent Gregorian "YYYY-MM-DD", which the rest of this module can then parse as usual.
++ * Returns null when the input is not a Jalali date, or when the document is not using the Jalali
++ * calendar, leaving Grist's ordinary parsing untouched.
++ */
++function fromJalali(date: string, dateFormat: string | undefined, jalali?: boolean): string | null {
++  if (!shouldUseJalali(jalali)) { return null; }
++  return jalaliDateStringToGregorian(date, dateFormat);
+ }
+ 
+ /**
+@@ -115,7 +129,13 @@ export function parseDate(date: string, options: ParseOptions = {}): number | nu
+     return timestamp;
+   }
+ 
+-  const dateFormat = options.dateFormat || "YYYY-MM-DD";
++  let dateFormat = options.dateFormat || "YYYY-MM-DD";
++  const jalaliDate = fromJalali(date, dateFormat, options.jalali);
++  if (jalaliDate !== null) {
++    // The input was a Jalali date; from here it is an ordinary ISO one.
++    date = jalaliDate;
++    dateFormat = "YYYY-MM-DD";
++  }
+   const dateFormats = [..._buildVariations(dateFormat, date), ...PARSER_FORMATS];
+   const cleanDate = date.replace(SEPARATORS, " ");
+   let datetime = cleanDate.trim();
+@@ -161,9 +181,13 @@ export function parseDateStrict(
+   if (timestamp !== null) {
+     return timestamp;
+   }
+-  dateFormat = dateFormat || "YYYY-MM-DD";
+-  const dateFormats = [..._buildVariations(dateFormat, date), ...UNAMBIGUOUS_FORMATS];
+-  const cleanDate = date.replace(SEPARATORS, " ").trim();
++  // A Jalali input (e.g. "۱۴۰۵/۰۹/۰۶") is rewritten as the Gregorian date it names, and from
++  // there on it is parsed like any other.
++  const jalaliDate = fromJalali(date, dateFormat || undefined);
++  const input = (jalaliDate === null) ? date : jalaliDate;
++  const format = (jalaliDate === null) ? (dateFormat || "YYYY-MM-DD") : "YYYY-MM-DD";
++  const dateFormats = [..._buildVariations(format, input), ...UNAMBIGUOUS_FORMATS];
++  const cleanDate = input.replace(SEPARATORS, " ").trim();
+   for (const format of dateFormats) {
+     const m = moment.tz(cleanDate, format, true, timezone);
+     if (m.isValid()) {
+diff --git a/app/server/lib/sendAppPage.ts b/app/server/lib/sendAppPage.ts
+index cd4e912..e1e120a 100644
+--- a/app/server/lib/sendAppPage.ts
++++ b/app/server/lib/sendAppPage.ts
+@@ -16,6 +16,8 @@ import {
+   IFeature, ImplicitlyEnabledFeatures,
+ } from "app/common/gristUrls";
+ import { isAffirmative, replaceLiteral, replaceLiterals } from "app/common/gutil";
++import { languageDir } from "app/common/LanguageDirection";
++import { shouldUseJalali } from "app/common/jalali";
+ import { getTagManagerSnippet } from "app/common/tagManager";
+ import { Document } from "app/common/UserAPI";
+ import { SUPPORT_EMAIL } from "app/gen-server/lib/homedb/HomeDBManager";
+@@ -241,6 +243,7 @@ export function makeSendAppPage({ server, staticDir, tag, testLogin, baseDomain
+         ).join("\n"),
+       ).join("\n");
+     const content = replaceLiterals(fileContent, {
++      "<html>": `<html ${getLanguageAttributes(req, config)}>`,
+       "<!-- INSERT WARNING -->": warning,
+       "<!-- INSERT TITLE -->": getDocName(config) ?? escapeExpression(translate(req, "Loading...")),
+       "<!-- INSERT META -->": getPageMetadataHtmlSnippet(req, config),
+@@ -261,6 +264,38 @@ export function makeSendAppPage({ server, staticDir, tag, testLogin, baseDomain
+   };
+ }
+ 
++/**
++ * Language attributes for the <html> element of an app page: the language the user will get, its
++ * writing direction, and the calendar dates should use in it.
++ *
++ * The client works the same language out again (detectCurrentLang() in app/client/lib/localization
++ * has the first say, since it also knows the browser's language), but deciding here too means the
++ * page is laid out the right way round as it loads, instead of flipping after the bundle runs.
++ */
++export function getLanguageAttributes(req: express.Request, config: GristLoadConfig): string {
++  const supportedLngs = config.supportedLngs;
++  const detected = config.userLocale || req.language || "en";
++  // Mirror how the client picks a language, so the two agree: an exact (case-insensitive) match
++  // first, then the bare language subtag, and English if neither is offered.
++  const lower = String(detected).toLowerCase();
++  let lng: string;
++  if (supportedLngs && supportedLngs.length) {
++    lng = supportedLngs.find(s => s.toLowerCase() === lower) ??
++      supportedLngs.find(s => s.toLowerCase() === lower.split(/[-_]/)[0]) ?? "en";
++  } else {
++    // Pages served without a gristConfig -- the published form, custom-widget.html -- have no list
++    // to check against. req.language has already been resolved by i18next against the languages the
++    // server offers, so it can be trusted, apart from needing a second look as markup: keep only
++    // what can be a language tag.
++    const safe = (lower.match(/^[a-z]+/) || [""])[0].slice(0, 8);
++    lng = safe || "en";
++  }
++  const dir = languageDir(lng);
++  const attrs = [`lang="${lng}"`, `dir="${dir}"`];
++  if (shouldUseJalali(null, lng)) { attrs.push('data-calendar="jalali"'); }
++  return attrs.join(" ");
++}
++
+ interface LogVisitedPageEventOptions {
+   server: GristServer;
+   pagePath: string;
+diff --git a/assets/locales/fa.client.json b/assets/locales/fa.client.json
+index 058b342..413d6d8 100644
+--- a/assets/locales/fa.client.json
++++ b/assets/locales/fa.client.json
+@@ -1,18 +1,31 @@
+ {
++  "ACLUsers": {
++    "View as": "مشاهده به‌عنوان",
++    "Example Users": "کاربران نمونه",
++    "Users from table": "کاربران از جدول"
++  },
+   "ACUserManager": {
+     "Invite new member": "دعوت از عضو جدید",
+     "Enter email address": "آدرس رایانامه(ایمیل) را وارد کنید",
+     "We'll email an invite to {{email}}": "ما دعوت‌نامه‌ای به آدرس {{email}} ارسال خواهیم کرد"
+   },
+   "AccessRules": {
++    "Save": "ذخیره",
++    "Continue": "ادامه",
++    "Reset": "بازنشانی",
++    "All": "همه",
++    "Columns": "ستون‌ها",
++    "View as": "مشاهده به‌عنوان",
++    "Checking...": "در حال بررسی…",
++    "Permissions": "مجوزها",
++    "Saved": "ذخیره شد",
++    "Add table rules": "افزودن قواعد جدول",
++    "Attribute name": "نام صفت",
+     "Add column rule": "افزودن قاعده ستون",
+     "Add Default Rule": "افزودن قاعده پیش‌فرض",
+-    "Add table rules": "افزودن قواعد جدول",
+     "Add user attributes": "افزودن خصیصه‌های کاربر",
+     "Allow everyone to view Access Rules.": "به همه اجازه مشاهده قواعد دسترسی را بدهید.",
+-    "Attribute name": "نام خصیصه",
+     "Attribute to Look Up": "خصیصه برای جستجو",
+-    "Checking...": "در حال بررسی…",
+     "Condition": "شرط",
+     "Default rules": "قواعد پیش‌فرض",
+     "Delete table rules": "حذف قواعد جدول",
+@@ -22,18 +35,13 @@
+     "Invalid": "نامعتبر",
+     "Permission to access the document in full when needed": "اجازه دسترسی کامل به سند وقتی نیاز شد",
+     "Permission to view Access Rules": "اجازه مشاهده قواعد دسترسی",
+-    "Permissions": "اجازه‌ها",
+     "Remove column {{- colId }} from {{- tableId }} rules": "حذف ستون {{- colId }} از قواعد {{- tableId }}",
+     "Remove {{- tableId }} rules": "حذف قواعد {{- tableId }}",
+     "Remove {{- name }} user attribute": "حذف خصیصه کاربر {{- name }}",
+-    "Reset": "بازنشانی",
+     "Rules for table ": "قواعد برای جدول ",
+-    "Save": "ذخیره",
+-    "Saved": "ذخیره شد",
+     "Special rules": "قواعد ویژه",
+     "Type message to display when this rule blocks an action…": "پیامی بنویسید…",
+     "User Attributes": "خصیصه‌های کاربر",
+-    "View as": "مشاهده به عنوان",
+     "Seed rules": "قواعد دانه(Seed)",
+     "Allow everyone to copy the entire document, or view it in full in fiddle mode.\nUseful for examples and templates, but not for sensitive data.": "به همه اجازه دهید کل سند را کپی کنند، یا آن را به صورت کامل در حالت ور رفتن مشاهده کنند.\nمفید برای نمونه‌ها و قالب‌ها، اما نه برای داده‌های حساس.",
+     "Lookup Column": "جستجوی ستون",
+@@ -44,9 +52,1799 @@
+     "Permission to edit document structure": "اجازه‌ی ویرایش ساختار سند",
+     "Add table-wide rule": "افزودن قانون سراسری جدول"
+   },
++  "AccountLeftPanel": {
++    "Account settings": "تنظیمات حساب",
++    "Developer": "توسعه‌دهنده",
++    "Personal site": "سایت شخصی",
++    "Profile": "پروفایل",
++    "Authorized apps": "برنامه‌های مجاز"
++  },
+   "AccountPage": {
++    "API": "API",
+     "API Key": "کلید API",
+-    "Account settings": "تنظیمات حساب کاربری",
+-    "API": "API"
++    "Account settings": "تنظیمات حساب",
++    "Change password": "تغییر گذرواژه",
++    "Edit": "ویرایش",
++    "Email": "رایانامه",
++    "Login method": "روش ورود",
++    "Name": "نام",
++    "Password & security": "گذرواژه و امنیت",
++    "Save": "ذخیره",
++    "Theme": "پوسته",
++    "Language": "زبان",
++    "Basic info": "اطلاعات پایه",
++    "Developer": "توسعه‌دهنده",
++    "Home": "خانه",
++    "Profile": "پروفایل",
++    "Accessibility": "دسترس‌پذیری",
++    "Enterprise": "سازمانی",
++    "Personal site": "سایت شخصی"
++  },
++  "AccountWidget": {
++    "Support Grist": "حمایت از Grist",
++    "Access Details": "جزئیات دسترسی",
++    "Sign in": "ورود",
++    "Sign up": "ثبت‌نام",
++    "Account settings": "تنظیمات حساب",
++    "Audit Logs": "گزارش‌های حسابرسی",
++    "Manage team": "مدیریت تیم",
++    "Add account": "افزودن حساب",
++    "Billing account": "حساب صورتحساب",
++    "Document settings": "تنظیمات سند",
++    "New": "جدید",
++    "Upgrade Plan": "ارتقای طرح",
++    "Accounts": "حساب‌ها",
++    "Activation": "فعال‌سازی"
++  },
++  "ActionLog": {
++    "All tables": "همه جدول‌ها"
++  },
++  "AddNewButton": {
++    "Add new": "افزودن"
++  },
++  "AdminAccessDeniedCard": {
++    "Administrator Panel Unavailable": "پیشخوان مدیریت در دسترس نیست",
++    "If you are the server operator, you can sign in using the boot key from your server logs.": "اگر اپراتور سرور هستید، می‌توانید با کلید بوت لاگ‌های سرور وارد شوید.",
++    "Sign in with boot key": "ورود با کلید بوت"
++  },
++  "AdminLeftPanel": {
++    "Learn more": "بیشتر بدانید",
++    "Installation": "نصب",
++    "Enterprise": "سازمانی",
++    "Apply changes": "اعمال تغییرات",
++    "Quick setup": "راه‌اندازی سریع",
++    "Settings": "تنظیمات",
++    "Workspaces": "فضاهای کاری",
++    "Admin area": "بخش مدیریت",
++    "Admin controls": "کنترل‌های مدیریتی",
++    "Admin Controls": "کنترل‌های مدیریتی",
++    "Users": "کاربران"
++  },
++  "AdminPanel": {
++    "Learn more.": "بیشتر بدانید.",
++    "Authentication": "احراز هویت",
++    "checking": "در حال بررسی",
++    "Sandboxing": "سندباکس",
++    "Support Grist": "حمایت از Grist",
++    "Admin Panel": "پیشخوان مدیریت",
++    "Dismiss": "نادیده گرفتن",
++    "Error": "خطا",
++    "Home": "خانه",
++    "Installation": "نصب",
++    "OK": "باشه",
++    "Audit Logs": "گزارش‌های حسابرسی",
++    "Backups": "پشتیبان‌گیری",
++    "Base URL": "نشانی پایه",
++    "Current authentication method": "روش احراز هویت فعلی",
++    "Edition": "نسخه",
++    "Enterprise": "سازمانی",
++    "Off": "خاموش",
++    "On": "روشن",
++    "Sandbox settings for data engine": "تنظیمات سندباکس موتور داده",
++    "Security Settings": "تنظیمات امنیت",
++    "Server": "سرور",
++    "Administrator Panel Unavailable": "پیشخوان مدیریت در دسترس نیست",
++    "Apply changes": "اعمال تغییرات",
++    "Back up documents externally": "پشتیبان‌گیری برون‌ساز از اسناد",
++    "Boot key": "کلید بوت",
++    "Contact us": "تماس با ما",
++    "default": "پیش‌فرض",
++    "disabled": "غیرفعال",
++    "Enable Grist Enterprise": "فعال‌سازی Grist Enterprise",
++    "How user actions can reach the outside world": "کنش‌های کاربر چگونه می‌توانند به بیرون برسند",
++    "If you are the server operator, you can sign in using the boot key from your server logs.": "اگر اپراتور سرور هستید، می‌توانید با کلید بوت لاگ‌های سرور وارد شوید.",
++    "Outgoing requests": "درخواست‌های خروجی",
++    "Restart": "راه‌اندازی مجدد",
++    "Sign in with boot key": "ورود با کلید بوت",
++    "Sponsor": "حمایت مالی",
++    "Storage": "ذخیره‌سازی",
++    "Telemetry": "تله‌متری",
++    "unknown": "ناشناخته",
++    "auth error": "خطای احراز هویت",
++    "Current": "فعلی"
++  },
++  "AdminPanelName": {
++    "Admin Panel": "پیشخوان مدیریت"
++  },
++  "AdminServersSection": {
++    "checking": "در حال بررسی",
++    "{{count}} of {{total}} not reporting_one": "{{count}} از {{total}} گزارش نمی‌دهد",
++    "{{count}} of {{total}} not reporting_other": "{{count}} از {{total}} گزارش نمی‌دهد",
++    "Refresh": "نوسازی",
++    "{{count}} documents_one": "{{count}} سند",
++    "{{count}} documents_other": "{{count}} سند",
++    "1 document": "۱ سند"
++  },
++  "AdminSetupRequests": {
++    "Clear": "پاک کردن",
++    "{{count}} requests_one": "{{count}} درخواست",
++    "{{count}} requests_other": "{{count}} درخواست",
++    "already done": "قبلاً انجام شده"
++  },
++  "AirtableImportUI": {
++    "Cancel": "لغو",
++    "Continue": "ادامه",
++    "{{count}} warnings_one": "{{count}} هشدار",
++    "{{count}} warnings_other": "{{count}} هشدار",
++    "Destination": "مقصد",
++    "Skip": "رد کردن",
++    "Back": "بازگشت",
++    "Choose destination": "انتخاب مقصد",
++    "Existing tables": "جدول‌های موجود",
++    "Import {{count}} tables_one": "درون‌ریزی {{count}} جدول",
++    "Import {{count}} tables_other": "درون‌ریزی {{count}} جدول",
++    "loading your tables...": "در حال بارگذاری جدول‌های شما...",
++    "New table": "جدول جدید",
++    "New table: structure only": "جدول جدید: فقط ساختار",
++    "or": "یا",
++    "Refresh": "نوسازی",
++    "Source tables": "جدول‌های مبدأ",
++    "Structure only": "فقط ساختار"
++  },
++  "ApiKey": {
++    "Remove": "برداشتن"
++  },
++  "App": {
++    "Description": "توضیح",
++    "Key": "کلید",
++    "Memory Error": "خطای حافظه",
++    "Translators: please translate this only when your language is ready to be offered to users": "Translators: please translate this only when your language is ready to be offered to users",
++    "Disabled screen reader improvements": "بهبودهای خواناگر غیرفعال است",
++    "Enabled screen reader improvements": "بهبودهای خواناگر فعال است",
++    "Exit without saving": "خروج بدون ذخیره",
++    "Stay on the page": "در همین صفحه بمانید",
++    "Unsaved changes": "تغییرات ذخیره‌نشده",
++    "You have unsaved changes. If you leave now, your changes will be lost.": "شما تغییرات ذخیره‌نشده دارید. اگر اکنون بروید، تغییرات‌تان از بین می‌رود."
++  },
++  "AppHeader": {
++    "Manage team": "مدیریت تیم",
++    "Billing account": "حساب صورتحساب",
++    "{{- organizationName }} - Back to home": "{{- organizationName }} - بازگشت به خانه"
++  },
++  "AskTheAdmin": {
++    "{{count}} people have asked for this._one": "{{count}} نفر این را خواسته‌اند.",
++    "{{count}} people have asked for this._other": "{{count}} نفر این را خواسته‌اند.",
++    "You and {{count}} others have asked for this._one": "شما و {{count}} نفر دیگر این را خواسته‌اید.",
++    "You and {{count}} others have asked for this._other": "شما و {{count}} نفر دیگر این را خواسته‌اید.",
++    "1 person has asked for this.": "۱ نفر این را خواسته است.",
++    "Add a note": "افزودن یادداشت",
++    "Ask the admin for this": "این را از مدیر بخواهید",
++    "Note sent.": "یادداشت ارسال شد.",
++    "You've asked for this.": "شما این را خواسته‌اید."
++  },
++  "Assistant": {
++    "Apply": "اعمال",
++    "Learn more.": "بیشتر بدانید.",
++    "upgrade your plan": "طرح خود را ارتقا دهید",
++    "For higher limits, {{upgradeNudge}}.": "برای محدودیت‌های بیشتر، {{upgradeNudge}}.",
++    "For higher limits, contact the site owner.": "برای محدودیت‌های بیشتر با صاحب سایت تماس بگیرید.",
++    "Press Enter to apply suggested formula.": "برای اعمال فرمول پیشنهادی Enter را بزنید.",
++    "What do you need help with?": "برای چه چیزی به کمک نیاز دارید؟",
++    "You have {{numCredits}} remaining credits.": "شما {{numCredits}} اعتبار باقی‌مانده دارید.",
++    "You have used all available credits.": "همه اعتبارهای شما استفاده شده است."
++  },
++  "AttachmentsEditor": {
++    "Delete": "حذف",
++    "Download": "بارگیری",
++    "Add": "افزودن",
++    "{{index}} of {{total}}": "{{index}} از {{total}}"
++  },
++  "AttachmentsWidget": {
++    "Image": "تصویر"
++  },
++  "AuditLogStreamingConfig": {
++    "Cancel": "لغو",
++    "Save": "ذخیره",
++    "Delete": "حذف",
++    "Learn more": "بیشتر بدانید",
++    "Edit": "ویرایش",
++    "Destination": "مقصد",
++    "Other": "سایر",
++    "URL": "نشانی"
++  },
++  "AuditLogsPage": {
++    "Home": "خانه",
++    "Audit Logs": "گزارش‌های حسابرسی",
++    "upgrade your plan": "طرح خود را ارتقا دهید",
++    "Contact us": "تماس با ما"
++  },
++  "AuthenticationSection": {
++    "Close": "بستن",
++    "Authentication": "احراز هویت",
++    "Revert": "بازگردانی",
++    "Active": "فعال",
++    "Error": "خطا",
++    "Confirm": "تأیید",
++    "Activate": "فعال‌سازی",
++    "Configure": "پیکربندی",
++    "disabled": "غیرفعال",
++    "Instructions": "دستورالعمل‌ها",
++    "Not recommended": "توصیه نمی‌شود"
++  },
++  "AutomationsPageEntry": {
++    "Automations": "خودکارسازی‌ها",
++    "New": "جدید"
++  },
++  "BackupsSection": {
++    "Learn more.": "بیشتر بدانید.",
++    "checking": "در حال بررسی",
++    "Active": "فعال",
++    "Backups": "پشتیبان‌گیری",
++    "Off": "خاموش",
++    "Back up documents externally": "پشتیبان‌گیری برون‌ساز از اسناد",
++    "Storage": "ذخیره‌سازی",
++    "unknown": "ناشناخته",
++    "at risk": "در معرض خطر"
++  },
++  "BaseUrlSection": {
++    "checking": "در حال بررسی",
++    "Base URL": "نشانی پایه",
++    "automatic": "خودکار",
++    "Automatic": "خودکار"
++  },
++  "BootPage": {
++    "Continue": "ادامه",
++    "Copy": "کپی",
++    "Boot key": "کلید بوت"
++  },
++  "CalendarConfigModal": {
++    "Add calendar": "افزودن تقویم",
++    "Create new column": "ایجاد ستون جدید",
++    "Date + time": "تاریخ + زمان",
++    "Date only": "فقط تاریخ",
++    "Dates": "تاریخ‌ها",
++    "End": "پایان",
++    "End (optional)": "پایان (اختیاری)",
++    "None": "هیچ",
++    "Pick the columns that hold your event dates and titles, or create new ones.": "ستون‌های نگه‌دارنده تاریخ و عنوان رویداد را انتخاب کنید یا تازه بسازید.",
++    "Select a column": "انتخاب یک ستون",
++    "Set up calendar": "پیکربندی تقویم",
++    "Start": "آغاز",
++    "Start and end must be the same date type.": "آغاز و پایان باید هم‌نوع باشند.",
++    "Title": "عنوان",
++    "Title (optional)": "عنوان (اختیاری)"
++  },
++  "CalendarView": {
++    "Day": "روز",
++    "Month": "ماه",
++    "New Event": "رویداد جدید",
++    "Today": "امروز",
++    "Week": "هفته"
++  },
++  "CalendarWrapper": {
++    "+{{count}} more_one": "+{{count}} مورد دیگر",
++    "+{{count}} more_other": "+{{count}} مورد دیگر",
++    "End Date": "تاریخ پایان",
++    "Groups events by category. Each choice uses its own color and style.": "رویدادها را بر پایه دسته گروه‌بندی می‌کند. هر گزینه رنگ و سبک خودش را دارد.",
++    "Is All Day": "تمام‌روزه است",
++    "Start Date": "تاریخ آغاز",
++    "The label shown on the event.": "برچسبی که روی رویداد نمایش داده می‌شود.",
++    "Title": "عنوان",
++    "When the event ends. If empty, the event lasts as long as its start.": "زمان پایان رویداد. اگر خالی باشد، رویداد به‌اندازه آغازش طول می‌کشد.",
++    "When the event starts.": "زمان آغاز رویداد.",
++    "Whether the event lasts all day.": "اینکه رویداد تمام‌روزه باشد یا نه.",
++    "Type": "نوع"
++  },
++  "CardContextMenu": {
++    "Copy anchor link": "کپی پیوند لنگر",
++    "Delete card": "حذف کارت",
++    "Duplicate card": "تکثیر کارت",
++    "Insert card": "درج کارت",
++    "Insert card above": "درج کارت در بالا",
++    "Insert card below": "درج کارت در پایین"
++  },
++  "CellContextMenu": {
++    "Clear cell": "پاک کردن سلول",
++    "Clear values": "پاک کردن مقادیر",
++    "Copy anchor link": "کپی پیوند لنگر",
++    "Delete {{count}} columns_one": "حذف ستون",
++    "Delete {{count}} columns_other": "حذف {{count}} ستون",
++    "Delete {{count}} rows_one": "حذف {{count}} ردیف",
++    "Delete {{count}} rows_other": "حذف {{count}} ردیف",
++    "Duplicate rows_one": "تکثیر ردیف",
++    "Duplicate rows_other": "تکثیر ردیف‌ها",
++    "Filter by this value": "فیلتر بر اساس این مقدار",
++    "Insert column to the left": "درج ستون در سمت چپ",
++    "Insert column to the right": "درج ستون در سمت راست",
++    "Insert row": "درج ردیف",
++    "Insert row above": "درج ردیف در بالا",
++    "Insert row below": "درج ردیف در پایین",
++    "Reset {{count}} columns_one": "بازنشانی ستون",
++    "Reset {{count}} columns_other": "بازنشانی {{count}} ستون",
++    "Reset {{count}} entire columns_one": "بازنشانی ستون کامل",
++    "Reset {{count}} entire columns_other": "بازنشانی {{count}} ستون کامل",
++    "Comment": "دیدگاه",
++    "Copy": "کپی",
++    "Cut": "برش",
++    "Paste": "چسباندن",
++    "Copy with headers": "کپی با سرستون‌ها"
++  },
++  "CellStyle": {
++    "CELL STYLE": "سبک سلول",
++    "Cell style": "سبک سلول",
++    "Default cell style": "سبک پیش‌فرض سلول",
++    "Mixed style": "سبک مخلوط",
++    "Open row styles": "باز کردن سبک‌های ردیف",
++    "Default header style": "سبک پیش‌فرض سرستون",
++    "Header Style": "سبک سرستون",
++    "HEADER STYLE": "سبک سرستون"
++  },
++  "ChartView": {
++    "Remove": "برداشتن",
++    "None": "هیچ",
++    "Horizontal": "افقی",
++    "Pick a column": "انتخاب یک ستون",
++    "Vertical": "عمودی",
++    "Add series": "افزودن سری",
++    "Aggregate values": "مقادیر تجمعی",
++    "Area chart": "نمودار سطحی",
++    "Bar chart": "نمودار میله‌ای"
++  },
++  "ChoiceEditor": {
++    "Error in dropdown condition": "خطا در شرط فهرست کشویی",
++    "No choices matching condition": "هیچ گزینه‌ای با شرط مطابقت ندارد",
++    "No choices to select": "گزینه‌ای برای انتخاب نیست"
++  },
++  "ChoiceListEditor": {
++    "Error in dropdown condition": "خطا در شرط فهرست کشویی",
++    "No choices matching condition": "هیچ گزینه‌ای با شرط مطابقت ندارد",
++    "No choices to select": "گزینه‌ای برای انتخاب نیست"
++  },
++  "ChoiceListEntry": {
++    "Cancel": "لغو",
++    "Save": "ذخیره",
++    "Edit": "ویرایش",
++    "+{{count}} more_one": "+{{count}} مورد دیگر",
++    "+{{count}} more_other": "+{{count}} مورد دیگر",
++    "Reset": "بازنشانی",
++    "No choices configured": "گزینه‌ای پیکربندی نشده"
++  },
++  "ChoiceTextBox": {
++    "CHOICES": "گزینه‌ها"
++  },
++  "Clipboard": {
++    "Got it": "فهمیدم",
++    "Unavailable Command": "دستور در دسترس نیست",
++    "The {{action}} menu command is not available in this browser. You can still {{action}} by using the keyboard shortcut {{shortcut}}.": "دستور {{action}} در این مرورگر در دسترس نیست. همچنان می‌توانید با میان‌بر {{shortcut}} آن را انجام دهید."
++  },
++  "CodeEditorPanel": {
++    "Access denied": "دسترسی رد شد"
++  },
++  "ColorSelect": {
++    "Cancel": "لغو",
++    "Apply": "اعمال",
++    "default": "پیش‌فرض",
++    "Default cell style": "سبک پیش‌فرض سلول"
++  },
++  "ColumnEditor": {
++    "COLUMN DESCRIPTION": "توضیح ستون",
++    "COLUMN LABEL": "برچسب ستون"
++  },
++  "ColumnFilterMenu": {
++    "All": "همه",
++    "All except": "همه به‌جز",
++    "All shown": "همه نمایش داده‌شده",
++    "Filter by Range": "فیلتر بر اساس بازه",
++    "Future values": "مقادیر آینده",
++    "No matching values": "مقداری مطابقت ندارد",
++    "None": "هیچ",
++    "Min": "کمینه",
++    "Max": "بیشینه",
++    "Start": "آغاز",
++    "End": "پایان",
++    "Other Matching": "مطابقت سایر",
++    "Other Non-Matching": "عدم تطابق سایر",
++    "Other values": "سایر مقادیر",
++    "Others": "دیگران",
++    "Search": "جست‌وجو",
++    "Search values": "جست‌وجوی مقادیر",
++    "Clear search": "پاک کردن جست‌وجو",
++    "Pin filter": "سنجاق کردن فیلتر",
++    "Sort alphabetically (current: sorted by number of occurrences)": "مرتب‌سازی الفبایی (فعلی: بر اساس تعداد تکرار)",
++    "Sort by number of occurrences (current: sorted alphabetically)": "مرتب‌سازی بر اساس تعداد تکرار (فعلی: الفبایی)",
++    "Unpin filter": "برداشتن سنجاق فیلتر",
++    "All filters": "همه فیلترها",
++    "Cancel": "لغو",
++    "Close": "بستن"
++  },
++  "ColumnInfo": {
++    "COLUMN DESCRIPTION": "توضیح ستون",
++    "COLUMN ID: ": "شناسه ستون: ",
++    "COLUMN LABEL": "برچسب ستون",
++    "Cancel": "لغو",
++    "Save": "ذخیره"
++  },
++  "ColumnTitle": {
++    "Cancel": "لغو",
++    "Save": "ذخیره",
++    "Close": "بستن",
++    "COLUMN ID: ": "شناسه ستون: ",
++    "Add description": "افزودن توضیح"
++  },
++  "ConditionalStyle": {
++    "Add another rule": "افزودن قاعده دیگر",
++    "Add conditional style": "افزودن سبک شرطی",
++    "Error in style rule": "خطا در قاعده سبک",
++    "Row style": "سبک ردیف",
++    "Rule must return True or False": "قاعده باید True یا False برگرداند",
++    "Conditional Style": "سبک شرطی",
++    "IF...": "اگر...",
++    "Row Style": "سبک ردیف",
++    "{{tableId}} - Conditional Style": "{{tableId}} - سبک شرطی",
++    "{{tableId}}.{{actualColId}} - Conditional Style": "{{tableId}}.{{actualColId}} - سبک شرطی"
++  },
++  "CreateTeamModal": {
++    "Cancel": "لغو"
++  },
++  "CustomSectionConfig": {
++    "Accept": "پذیرفتن",
++    "Add": "افزودن",
++    "Custom URL": "نشانی سفارشی",
++    "Developer:": "توسعه‌دهنده:",
++    "Last updated:": "آخرین به‌روزرسانی:",
++    "Learn more about custom widgets": "درباره ابزارک‌های سفارشی بیشتر بدانید",
++    "Open configuration": "باز کردن پیکربندی",
++    "Pick a column": "انتخاب یک ستون",
++    "Widget": "ابزارک",
++    "ACCESS LEVEL": "سطح دسترسی"
++  },
++  "CustomWidgetGallery": {
++    "Cancel": "لغو",
++    "Search": "جست‌وجو",
++    "Change widget": "تغییر ابزارک",
++    "Custom URL": "نشانی سفارشی",
++    "Developer:": "توسعه‌دهنده:",
++    "Last updated:": "آخرین به‌روزرسانی:",
++    "Learn more about custom widgets": "درباره ابزارک‌های سفارشی بیشتر بدانید",
++    "(Missing info)": "(اطلاعات غایب)",
++    "Add widget": "افزودن ابزارک"
++  },
++  "DataTables": {
++    "Click to copy": "برای کپی کلیک کنید",
++    "Delete {{formattedTableName}} data, and remove it from all pages?": "داده‌های {{formattedTableName}} حذف و از همه صفحات برداشته شود؟",
++    "Duplicate table": "تکثیر جدول",
++    "Raw Data Tables": "جدول‌های داده خام",
++    "Table ID copied to clipboard": "شناسه جدول در کلیپ‌بورد کپی شد",
++    "You do not have edit access to this document": "شما اجازه ویرایش این سند را ندارید",
++    "Edit record card": "ویرایش کارت رکورد",
++    "Record Card": "کارت رکورد",
++    "Record Card Disabled": "کارت رکورد غیرفعال است",
++    "Remove table": "برداشتن جدول",
++    "Rename table": "تغییر نام جدول",
++    "{{action}} Record Card": "{{action}} کارت رکورد"
++  },
++  "DateRangeOptions": {
++    "Last 30 days": "۳۰ روز گذشته",
++    "Last 7 days": "۷ روز گذشته",
++    "Last week": "هفته گذشته",
++    "Next 7 days": "۷ روز پیشِ رو",
++    "This month": "این ماه",
++    "This week": "این هفته",
++    "This year": "امسال",
++    "Today": "امروز"
++  },
++  "DateTextBox": {
++    "Calendar": "تقویم",
++    "Jalali (Persian) calendar": "تقویم هجری شمسی",
++    "Gregorian calendar": "تقویم میلادی",
++    "Follows the document language. Dates are always stored as real dates; only how they are shown and typed changes.": "از زبان سند پیروی می‌کند. تاریخ‌ها همیشه به‌صورت تاریخ واقعی ذخیره می‌شوند؛ تنها شیوه نمایش و ورود تغییر می‌کند.",
++    "Set for this column only; it overrides the document language.": "فقط برای این ستون تنظیم شده و زبان سند را کنار می‌زند."
++  },
++  "DescriptionConfig": {
++    "DESCRIPTION": "توضیح",
++    "Set description": "تنظیم توضیح"
++  },
++  "DescriptionTextArea": {
++    "DESCRIPTION": "توضیح"
++  },
++  "DetailView": {
++    "This row is unavailable or does not exist": "این ردیف در دسترس نیست یا وجود ندارد"
++  },
++  "DiscussionEditor": {
++    "Cancel": "لغو",
++    "Save": "ذخیره",
++    "Edit": "ویرایش",
++    "Remove": "برداشتن",
++    "Comment": "دیدگاه",
++    "Copy link": "کپی پیوند",
++    "Open": "باز کردن",
++    "{{count}} comments_one": "{{count}} دیدگاه",
++    "{{count}} comments_other": "{{count}} دیدگاه",
++    "Only my threads": "فقط رشته‌های من",
++    "Only current page": "فقط صفحه فعلی",
++    "Reply": "پاسخ",
++    "Resolve": "حل‌وفصل",
++    "Show resolved comments": "نمایش دیدگاه‌های حل‌شده"
++  },
++  "DocHistory": {
++    "Activity": "فعالیت",
++    "Beta": "آزمایشی"
++  },
++  "DocList": {
++    "Delete": "حذف",
++    "Name": "نام",
++    "Manage users": "مدیریت کاربران",
++    "All": "همه",
++    "Workspace": "فضای کاری",
++    "Current workspace": "فضای کاری فعلی",
++    "Delete {{name}}": "حذف {{name}}",
++    "Deleted {{at}}": "حذف‌شده در {{at}}",
++    "Document will be moved to Trash.": "سند به زباله‌دان منتقل می‌شود.",
++    "Download document...": "بارگیری سند...",
++    "Edited {{at}}": "ویرایش‌شده در {{at}}",
++    "Move": "انتقال",
++    "Move {{name}} to workspace": "انتقال {{name}} به فضای کاری",
++    "Rename and set icon": "تغییر نام و تنظیم شمایل",
++    "Requires edit permissions": "نیازمند مجوز ویرایش",
++    "Access details": "جزئیات دسترسی",
++    "Pinned": "سنجاق‌شده",
++    "Recent": "اخیر"
++  },
++  "DocMenu": {
++    "(The organization needs a paid plan)": "(این سازمان به طرح پرداختی نیاز دارد)",
++    "Access Details": "جزئیات دسترسی",
++    "All documents": "همه اسناد",
++    "By Date Modified": "بر اساس تاریخ تغییر",
++    "By Name": "بر اساس نام",
++    "Current workspace": "فضای کاری فعلی",
++    "Delete": "حذف",
++    "Delete Forever": "حذف همیشگی",
++    "Delete {{name}}": "حذف {{name}}",
++    "Deleted {{at}}": "حذف‌شده در {{at}}",
++    "Discover More Templates": "الگوهای بیشتر کشف کنید",
++    "Document will be moved to Trash.": "سند به زباله‌دان منتقل می‌شود.",
++    "Document will be permanently deleted.": "سند برای همیشه حذف می‌شود.",
++    "Documents stay in Trash for 30 days, after which they get deleted permanently.": "اسناد ۳۰ روز در زباله‌دان می‌مانند و سپس برای همیشه حذف می‌شوند.",
++    "Edited {{at}}": "ویرایش‌شده در {{at}}",
++    "Examples & Templates": "نمونه‌ها و الگوها",
++    "Examples and Templates": "نمونه‌ها و الگوها",
++    "Featured": "برگزیده",
++    "Grid view": "نمای شبکه",
++    "List view": "نمای فهرست",
++    "Manage users": "مدیریت کاربران",
++    "More Examples and Templates": "نمونه‌ها و الگوهای بیشتر",
++    "Move": "انتقال",
++    "Move {{name}} to workspace": "انتقال {{name}} به فضای کاری",
++    "Other Sites": "سایت‌های دیگر",
++    "Permanently Delete \"{{name}}\"?": "«{{name}}» برای همیشه حذف شود؟",
++    "Pin Document": "سنجاق کردن سند",
++    "Pinned Documents": "اسناد سنجاق‌شده",
++    "Remove": "برداشتن",
++    "Rename": "تغییر نام",
++    "Requires edit permissions": "نیازمند مجوز ویرایش",
++    "Restore": "بازیابی",
++    "This service is not available right now": "این سرویس اکنون در دسترس نیست",
++    "To restore this document, restore the workspace first.": "برای بازیابی این سند، اول فضای کاری را بازیابی کنید.",
++    "Trash": "زباله‌دان",
++    "Trash is empty.": "زباله‌دان خالی است.",
++    "Unpin Document": "برداشتن سنجاق سند",
++    "Workspace not found": "فضای کاری پیدا نشد",
++    "You are on the {{siteName}} site. You also have access to the following sites:": "شما در سایت {{siteName}} هستید. به سایت‌های زیر هم دسترسی دارید:",
++    "You are on your personal site. You also have access to the following sites:": "شما در سایت شخصی خود هستید. به سایت‌های زیر هم دسترسی دارید:",
++    "You may delete a workspace forever once it has no documents in it.": "وقتی فضای کاری خالی شد می‌توانید آن را برای همیشه حذف کنید.",
++    "Any documents created in this site will appear here.": "هر سند که در این سایت ساخته شود اینجا نمایش داده می‌شود.",
++    "Create my first document": "نخستین سندم را بساز",
++    "You have read-only access to this site. Currently there are no documents.": "شما دسترسی فقط‌خواندنی به این سایت دارید. در حال حاضر سندی وجود ندارد.",
++    "personal site": "سایت شخصی",
++    "Documents": "اسناد"
++  },
++  "DocPageModel": {
++    "Add empty table": "افزودن جدول خالی",
++    "Add page": "افزودن صفحه",
++    "Add widget to page": "افزودن ابزارک به صفحه",
++    "Reload": "بارگذاری مجدد",
++    "You do not have edit access to this document": "شما اجازه ویرایش این سند را ندارید",
++    "Import from {{importSource}}": "درون‌ریزی از {{importSource}}",
++    "Import from...": "درون‌ریزی از..."
++  },
++  "DocTutorial": {
++    "Finish": "پایان",
++    "Next": "بعدی",
++    "Previous": "قبلی",
++    "Restart": "راه‌اندازی مجدد"
++  },
++  "DocumentSettings": {
++    "Currency:": "واحد پول:",
++    "Document settings": "تنظیمات سند",
++    "Local currency ({{currency}})": "واحد پول محلی ({{currency}})",
++    "Locale:": "زون محلی:",
++    "Save": "ذخیره",
++    "Save and Reload": "ذخیره و بارگذاری مجدد",
++    "This document's ID (for API use):": "شناسه این سند (برای استفاده از API):",
++    "Time Zone:": "منطقه زمانی:",
++    "API": "API",
++    "Document ID copied to clipboard": "شناسه سند در کلیپ‌بورد کپی شد",
++    "Ok": "باشه",
++    "Webhooks": "Webhookها",
++    "API console": "کنسول API",
++    "API URL copied to clipboard": "نشانی API در کلیپ‌بورد کپی شد",
++    "API documentation.": "مستندات API.",
++    "Base doc URL: {{docApiUrl}}": "نشانی پایه سند: {{docApiUrl}}",
++    "Coming soon": "به‌زودی",
++    "Copy to clipboard": "کپی به کلیپ‌بورد",
++    "Currency": "واحد پول",
++    "Data engine": "موتور داده",
++    "Default for DateTime columns": "پیش‌فرض ستون‌های تاریخ و زمان",
++    "Document ID": "شناسه سند",
++    "Find slow formulas": "یافتن فرمول‌های کند",
++    "For currency columns": "برای ستون‌های پولی",
++    "For number and date formats": "برای قالب‌های عدد و تاریخ",
++    "For number formats": "برای قالب‌های عدد",
++    "Formula times": "زمان فرمول‌ها",
++    "ID for API use": "شناسه برای استفاده از API",
++    "Locale": "زون محلی",
++    "Notify other services on doc changes": "هنگام تغییر سند به سرویس‌های دیگر خبر بده",
++    "Python version used": "نسخه پایتون مورد استفاده",
++    "Reload": "بارگذاری مجدد",
++    "Time zone": "منطقه زمانی",
++    "Try API calls from the browser": "آزمایش فراخوانی API از مرورگر",
++    "Cancel": "لغو",
++    "Formula timer": "زمان‌سنج فرمول",
++    "Start timing": "آغاز زمان‌سنجی",
++    "Stop timing...": "توقف زمان‌سنجی...",
++    "Time reload": "زمان بارگذاری مجدد",
++    "Timing is on": "زمان‌سنجی روشن است",
++    "Only available to document editors": "فقط برای ویرایشگران سند در دسترس",
++    "Only available to document owners": "فقط برای مالکان سند در دسترس",
++    "Template mode": "حالت الگو",
++    "Change document type": "تغییر نوع سند",
++    "Edit": "ویرایش",
++    "Change nature of document": "تغییر ماهیت سند",
++    "Regular document": "سند معمولی",
++    "Regular": "معمولی",
++    "Template": "الگو",
++    "fiddle mode": "حالت ور رفتن",
++    "Tutorial": "آموزش",
++    "Confirm change": "تأیید تغییر",
++    "Attachment storage": "جای ذخیره پیوست‌ها",
++    "External": "بیرونی",
++    "Internal": "درونی",
++    "Upload": "بارگذاری",
++    "Uploading...": "در حال بارگذاری...",
++    "Default": "پیش‌فرض",
++    "Document type": "نوع سند",
++    "Allow others to suggest changes": "به دیگران اجازه پیشنهاد تغییر بدهید",
++    "Enable suggestions": "فعال‌سازی پیشنهادها",
++    "Suggestions": "پیشنهادها",
++    "experiment": "آزمایشی",
++    "[Learn more.]({{learnLink}})": "[بیشتر بدانید.]({{learnLink}})"
++  },
++  "DocumentUsage": {
++    "Rows": "ردیف‌ها"
++  },
++  "EditionSection": {
++    "Cancel": "لغو",
++    "Learn more.": "بیشتر بدانید.",
++    "Edition": "نسخه",
++    "On": "روشن",
++    "Community": "اجتماعی"
++  },
++  "Editor": {
++    "Delete": "حذف"
++  },
++  "Experiments": {
++    "Notifications": "اعلان‌ها"
++  },
++  "Field": {
++    "No choices configured": "گزینه‌ای پیکربندی نشده",
++    "Hide": "پنهان کردن"
++  },
++  "FieldBuilder": {
++    "Apply formula to data": "اعمال فرمول بر داده",
++    "CELL FORMAT": "قالب سلول",
++    "Changing multiple column types": "تغییر نوع چند ستون",
++    "DATA FROM TABLE": "داده از جدول",
++    "Mixed format": "قالب مخلوط",
++    "Mixed types": "انواع مخلوط",
++    "Revert field settings for {{colId}} to common": "بازگردانی تنظیمات فیلد {{colId}} به مشترک",
++    "Save field settings for {{colId}} as common": "ذخیره تنظیمات فیلد {{colId}} به‌عنوان مشترک",
++    "Use separate field settings for {{colId}}": "استفاده از تنظیمات فیلد جدا برای {{colId}}",
++    "Changing column type": "تغییر نوع ستون",
++    "Common": "مشترک",
++    "Separate": "جدا",
++    "Field in {{count}} views_one": "فیلد در {{count}} نما",
++    "Field in {{count}} views_other": "فیلد در {{count}} نما"
++  },
++  "FieldConfig": {
++    "COLUMN BEHAVIOR": "رفتار ستون",
++    "COLUMN LABEL AND ID": "برچسب و شناسه ستون",
++    "Clear and make into formula": "پاک کردن و تبدیل به فرمول",
++    "Clear and reset": "پاک کردن و بازنشانی",
++    "Column options are limited in summary tables.": "گزینه‌های ستون در جدول‌های خلاصه محدود است.",
++    "Convert column to data": "تبدیل ستون به داده",
++    "Convert to trigger formula": "تبدیل به فرمول ماشه",
++    "Data columns_one": "ستون‌های داده",
++    "Data columns_other": "ستون‌های داده",
++    "Empty columns_one": "ستون‌های خالی",
++    "Empty columns_other": "ستون‌های خالی",
++    "Enter formula": "فرمول را وارد کنید",
++    "Formula columns_one": "ستون‌های فرمول",
++    "Formula columns_other": "ستون‌های فرمول",
++    "Make into data column": "تبدیل به ستون داده",
++    "Mixed Behavior": "رفتار مخلوط",
++    "Set formula": "تنظیم فرمول",
++    "Set trigger formula": "تنظیم فرمول ماشه",
++    "TRIGGER FORMULA": "فرمول ماشه",
++    "DESCRIPTION": "توضیح"
++  },
++  "FieldContextMenu": {
++    "Copy": "کپی",
++    "Copy anchor link": "کپی پیوند لنگر",
++    "Comment": "دیدگاه",
++    "Cut": "برش",
++    "Paste": "چسباندن",
++    "Clear field": "پاک کردن فیلد"
++  },
++  "FieldMenus": {
++    "Revert to common settings": "بازگشت به تنظیمات مشترک",
++    "Save as common settings": "ذخیره به‌عنوان تنظیمات مشترک",
++    "Use separate settings": "استفاده از تنظیمات جدا",
++    "Using common settings": "در حال استفاده از تنظیمات مشترک",
++    "Using separate settings": "در حال استفاده از تنظیمات جدا"
++  },
++  "FilterBar": {
++    "SearchColumns": "جست‌وجوی ستون‌ها",
++    "Search Columns": "جست‌وجوی ستون‌ها"
++  },
++  "FilterConfig": {
++    "Add column": "افزودن ستون",
++    "Pin filter - {{- columnName}} column (current: unpinned)": "سنجاق کردن فیلتر - ستون {{- columnName}} ( فعلی: سنجاق‌نشده)",
++    "Unpin filter - {{- columnName}} column (current: pinned)": "برداشتن سنجاق فیلتر - ستون {{- columnName}} (فعلی: سنجاق‌شده)",
++    "{{- columnName }} column filters": "فیلترهای ستون {{- columnName }}",
++    "remove filter - {{- columnName}} column": "برداشتن فیلتر - ستون {{- columnName}}"
++  },
++  "FormConfig": {
++    "Field Format": "قالب فیلد",
++    "Default": "پیش‌فرض",
++    "Field rules": "قواعد فیلد",
++    "Hidden field": "فیلد پنهان",
++    "Horizontal": "افقی",
++    "Required field": "فیلد اجباری",
++    "Vertical": "عمودی",
++    "Ascending": "افزاینده"
++  },
++  "FormContainer": {
++    "Build your own form": "فرم خود را بسازید",
++    "Powered by": "توانا ساخته‌شده با"
++  },
++  "FormErrorPage": {
++    "Error": "خطا"
++  },
++  "FormRenderer": {
++    "Search": "جست‌وجو",
++    "Reset": "بازنشانی",
++    "Are you sure you want to reset your form?": "آیا از بازنشانی فرم مطمئن هستید؟",
++    "Submit": "ثبت"
++  },
++  "FormSuccessPage": {
++    "Thank you! Your response has been recorded.": "سپاس! پاسخ شما ثبت شد."
++  },
++  "FormView": {
++    "Publish": "انتشار",
++    "Publish your form?": "فرم منتشر شود؟",
++    "Unpublish": "لغو انتشار",
++    "Unpublish your form?": "انتشار فرم لغو شود؟",
++    "Anyone with the link below can see the empty form and submit a response.": "هرکس پیوند زیر را داشته باشد می‌تواند فرم خالی را ببیند و پاسخ بفرستد.",
++    "Are you sure you want to reset your form?": "آیا از بازنشانی فرم مطمئن هستید؟",
++    "Code copied to clipboard": "کد در کلیپ‌بورد کپی شد",
++    "Copy code": "کپی کد",
++    "Copy link": "کپی پیوند",
++    "Embed this form": "جاسازی این فرم",
++    "Link copied to clipboard": "پیوند در کلیپ‌بورد کپی شد",
++    "Preview": "پیش‌نمایش",
++    "Reset": "بازنشانی",
++    "Reset form": "بازنشانی فرم",
++    "Save your document to publish this form.": "سند خود را ذخیره کنید تا این فرم منتشر شود.",
++    "Share": "اشتراک‌گذاری",
++    "Share this form": "اشتراک این فرم",
++    "This table does not accept new records.": "این جدول رکورد جدید نمی‌پذیرد.",
++    "View": "نما",
++    "Your form description goes here.": "توضیح فرم شما این‌جا قرار می‌گیرد.",
++    "Publishing your form will generate a share link. Anyone with the link can see the empty form and submit a response.": "با انتشار فرم، یک پیوند اشتراک ساخته می‌شود. هرکس آن پیوند را داشته باشد می‌تواند فرم خالی را ببیند و پاسخ بفرستد.",
++    "Unpublishing the form will disable the share link so that users accessing your form via that link will see an error.": "با لغو انتشار، پیوند اشتراک از کار می‌افتد و کاربرانی که از آن پیوند می‌آیند خطا خواهند دید.",
++    "Users are limited to submitting entries (records in your table) and reading pre-set values in designated fields, such as reference and choice columns.": "کاربران فقط می‌توانند ورودی (رکورد در جدول شما) بفرستند و مقادیر از پیش تنظیم‌شده در فیلدهای مشخص، مانند ستون‌های ارجاع و گزینه، را ببینند.",
++    "Your form is published. Every change is live and visible to users with access to the form. If you want to make changes in draft, unpublish the form.": "فرم شما منتشر شده است. هر تغییری بلافاصله برای کاربرانِ دارای دسترسی نمایان است. اگر می‌خواهید در پیش‌نویس تغییر دهید، انتشار را لغو کنید."
++  },
++  "FormulaAssistant": {
++    "Cancel": "لغو",
++    "Save": "ذخیره",
++    "Learn more": "بیشتر بدانید",
++    "Apply": "اعمال",
++    "Preview": "پیش‌نمایش",
++    "AI Assistant": "دستیار هوش مصنوعی",
++    "upgrade your plan": "طرح خود را ارتقا دهید",
++    "Code view": "نمای کد",
++    "Community": "اجتماعی",
++    "Data": "داده",
++    "For higher limits, {{upgradeNudge}}.": "برای محدودیت‌های بیشتر، {{upgradeNudge}}.",
++    "For higher limits, contact the site owner.": "برای محدودیت‌های بیشتر با صاحب سایت تماس بگیرید.",
++    "Press Enter to apply suggested formula.": "برای اعمال فرمول پیشنهادی Enter را بزنید.",
++    "What do you need help with?": "برای چه چیزی به کمک نیاز دارید؟",
++    "You have {{numCredits}} remaining credits.": "شما {{numCredits}} اعتبار باقی‌مانده دارید.",
++    "You have used all available credits.": "همه اعتبارهای شما استفاده شده است."
++  },
++  "FormulaEditor": {
++    "Enter formula.": "فرمول را وارد کنید."
++  },
++  "FormulaTransform": {
++    "Apply": "اعمال",
++    "Cancel": "لغو",
++    "Preview": "پیش‌نمایش"
++  },
++  "GetGristComProvider": {
++    "Cancel": "لغو",
++    "Recommended": "توصیه‌شده",
++    "Configure": "پیکربندی",
++    "Instructions": "دستورالعمل‌ها"
++  },
++  "GridOptions": {
++    "Grid Options": "گزینه‌های شبکه",
++    "Horizontal gridlines": "خطوط افقی",
++    "Show": "نمایش",
++    "Vertical gridlines": "خطوط عمودی",
++    "Zebra stripes": "راه‌راه شطرنجی",
++    "row IDs": "شناسه ردیف‌ها",
++    "row numbers": "شماره ردیف‌ها"
++  },
++  "GridView": {
++    "ID": "شناسه"
++  },
++  "GridViewMenus": {
++    "Add column": "افزودن ستون",
++    "Add to sort": "افزودن به مرتب‌سازی",
++    "Clear values": "پاک کردن مقادیر",
++    "Column Options": "گزینه‌های ستون",
++    "Convert formula to data": "تبدیل فرمول به داده",
++    "Delete {{count}} columns_one": "حذف ستون",
++    "Delete {{count}} columns_other": "حذف {{count}} ستون",
++    "Filter Data": "فیلتر داده",
++    "Freeze {{count}} columns_one": "ثابت کردن {{count}} ستون",
++    "Freeze {{count}} columns_other": "ثابت کردن {{count}} ستون",
++    "Freeze {{count}} more columns_one": "ثابت کردن {{count}} ستون دیگر",
++    "Freeze {{count}} more columns_other": "ثابت کردن {{count}} ستون دیگر",
++    "Hide {{count}} columns_one": "پنهان کردن {{count}} ستون",
++    "Hide {{count}} columns_other": "پنهان کردن {{count}} ستون",
++    "Insert column to the {{to}}": "درج ستون در {{to}}",
++    "More sort options ...": "گزینه‌های بیشتر مرتب‌سازی ...",
++    "Rename column": "تغییر نام ستون",
++    "Reset {{count}} columns_one": "بازنشانی ستون",
++    "Reset {{count}} columns_other": "بازنشانی {{count}} ستون",
++    "Reset {{count}} entire columns_one": "بازنشانی ستون کامل",
++    "Reset {{count}} entire columns_other": "بازنشانی {{count}} ستون کامل",
++    "Show column {{- label}}": "نمایش ستون {{- label}}",
++    "Sort": "مرتب‌سازی",
++    "Sorted (#{{count}})_one": "مرتب‌شده (#{{count}})",
++    "Sorted (#{{count}})_other": "مرتب‌شده (#{{count}})",
++    "Unfreeze all columns": " آزادسازی همه ستون‌ها",
++    "Unfreeze {{count}} columns_one": "آزادسازی {{count}} ستون",
++    "Unfreeze {{count}} columns_other": "آزادسازی {{count}} ستون",
++    "Insert column to the left": "درج ستون در سمت چپ",
++    "Insert column to the right": "درج ستون در سمت راست",
++    "Apply on record changes": "اعمال هنگام تغییر رکوردها",
++    "Apply to new records": "اعمال بر رکوردهای جدید",
++    "Authorship": "نویسندگی",
++    "Created At": "ایجاد شده در",
++    "Created By": "ایجاد شده توسط",
++    "Hidden Columns": "ستون‌های پنهان",
++    "Last Updated At": "آخرین به‌روزرسانی در",
++    "Last Updated By": "آخرین به‌روزرسانی توسط",
++    "Lookups": "جست‌وجوهای مرتبط",
++    "Shortcuts": "میان‌برها",
++    "Show hidden columns": "نمایش ستون‌های پنهان",
++    "Timestamp": "مهر زمانی",
++    "no reference column": "بدون ستون ارجاع",
++    "Adding UUID column": "افزودن ستون UUID",
++    "Adding duplicates column": "افزودن ستون تکراری‌ها",
++    "Detect Duplicates in...": "شناسایی تکراری‌ها در...",
++    "Duplicate in {{- label}}": "تکراری در {{- label}}",
++    "No reference columns.": "ستون ارجاعی وجود ندارد.",
++    "Search columns": "جست‌وجوی ستون‌ها",
++    "UUID": "UUID",
++    "Add column with type": "افزودن ستون با نوع",
++    "Add formula column": "افزودن ستون فرمول",
++    "Created at": "ایجاد در",
++    "Created by": "ایجاد توسط",
++    "Detect duplicates in...": "شناسایی تکراری‌ها در...",
++    "Last updated at": "آخرین به‌روزرسانی در",
++    "Last updated by": "آخرین به‌روزرسانی توسط",
++    "Any": "هر",
++    "Numeric": "عددی",
++    "Text": "متن",
++    "Integer": "عدد صحیح",
++    "Toggle": "کلید",
++    "Date": "تاریخ",
++    "DateTime": "تاریخ و زمان",
++    "Choice": "گزینه",
++    "Choice List": "فهرست گزینه‌ها",
++    "Reference": "ارجاع",
++    "Reference List": "فهرست ارجاع",
++    "Attachment": "پیوست",
++    "Row numbers": "شماره ردیف‌ها",
++    "Numbers": "عدد",
++    "Row IDs": "شناسه ردیف‌ها",
++    "Hidden": "پنهان"
++  },
++  "GridViewMenusDateHelpers": {
++    "12-hour format": "قالب ۱۲ ساعته",
++    "24-hour format": "قالب ۲۴ ساعته",
++    "AM": "ق.ظ",
++    "Calendar": "تقویم",
++    "Date helpers…": "کمک‌های تاریخی…",
++    "Day": "روز",
++    "Day of month": "روز ماه",
++    "Day of week": "روز هفته",
++    "Day of week (abbrev)": "روز هفته (مخفف)",
++    "Day of week (full)": "روز هفته (کامل)",
++    "Day of week (numeric)": "روز هفته (عددی)",
++    "Days since": "روزهای سپری‌شده",
++    "Days until": "روزهای مانده",
++    "Default": "پیش‌فرض",
++    "End of": "پایانِ",
++    "Full date": "تاریخ کامل",
++    "Full name with year": "نام کامل با سال",
++    "Hour": "ساعت",
++    "Intervals": "بازه‌ها",
++    "Is weekend?": "آخر هفته است؟",
++    "Minute": "دقیقه",
++    "Month": "ماه",
++    "Months since": "ماه‌های سپری‌شده",
++    "Months until": "ماه‌های مانده",
++    "Name only": "فقط نام",
++    "Number only": "فقط عدد",
++    "Quarter": "فصل",
++    "Quick Picks": "انتخاب سریع",
++    "Relative": "نسبی",
++    "Short with year": "کوتاه با سال",
++    "Sortable": "قابل مرتب‌سازی",
++    "Start of": "آغازِ",
++    "Time": "زمان",
++    "Time bucket": "بازه زمانی",
++    "Week": "هفته",
++    "Week of year": "هفته سال",
++    "Year": "سال",
++    "Years since": "سال‌های سپری‌شده",
++    "Years until": "سال‌های مانده",
++    "AM/PM": "ق.ظ/ب.ظ"
++  },
++  "GristDoc": {
++    "Added new linked section to view {{viewName}}": "بخش پیوندخورده جدید به نمای {{viewName}} افزوده شد",
++    "Import from file": "درون‌ریزی از پرونده",
++    "Saved linked section {{title}} in view {{name}}": "بخش پیوندخورده {{title}} در نمای {{name}} ذخیره شد",
++    "go to webhook settings": "رفتن به تنظیمات webhook",
++    "New changes are temporarily suspended. Webhooks queue overflowed. Please check webhooks settings, remove invalid webhooks, and clean the queue.": "تغییرات تازه موقتاً متوقف شده‌اند. صف webhook پر شد. لطفاً تنظیمات webhook را بررسی، موارد نامعتبر را حذف و صف را تخلیه کنید.",
++    "Import from Airtable": "درون‌ریزی از Airtable",
++    "{{title}} widget": "ابزارک {{title}}",
++    "Airtable": "Airtable",
++    "File": "پرونده"
++  },
++  "GristImportEntryPoints": {
++    "Copy data from another document": "کپی داده از سند دیگر"
++  },
++  "GristImportUI": {
++    "Cancel": "لغو",
++    "Continue": "ادامه",
++    "{{count}} warnings_one": "{{count}} هشدار",
++    "{{count}} warnings_other": "{{count}} هشدار",
++    "Destination": "مقصد",
++    "Skip": "رد کردن",
++    "Workspace": "فضای کاری",
++    "Choose destination": "انتخاب مقصد",
++    "Copy {{count}} tables_one": "کپی {{count}} جدول",
++    "Copy {{count}} tables_other": "کپی {{count}} جدول",
++    "Existing tables": "جدول‌های موجود",
++    "loading your tables...": "در حال بارگذاری جدول‌های شما...",
++    "New table": "جدول جدید",
++    "New table: structure only": "جدول جدید: فقط ساختار",
++    "Source tables": "جدول‌های مبدأ",
++    "Structure only": "فقط ساختار",
++    "Try for free": "آزمایش رایگان",
++    "Try full Grist": "آزمایش Grist کامل",
++    "1 warning": "۱ هشدار"
++  },
++  "GristTooltips": {
++    "Learn more": "بیشتر بدانید",
++    "Learn more.": "بیشتر بدانید.",
++    "Add new": "افزودن",
++    "Calendar": "تقویم",
++    "Access Rules": "قواعد دسترسی",
++    "Raw Data page": "صفحه داده خام",
++    "[Learn more.]({{link}})": "[بیشتر بدانید.]({{link}})",
++    "Anchor Links": "پیوندهای لنگر"
++  },
++  "HelpUsImproveSection": {
++    "Other": "سایر",
++    "A business or organization": "یک کسب‌وکار یا سازمان"
++  },
++  "HomeIntro": {
++    "Help Center": "مرکز راهنما",
++    "Sign in": "ورود",
++    "Sign up": "ثبت‌نام",
++    "Any documents created in this site will appear here.": "هر سند که در این سایت ساخته شود اینجا نمایش داده می‌شود.",
++    "Create empty document": "ایجاد سند خالی",
++    "Import document": "درون‌ریزی سند",
++    "personal site": "سایت شخصی",
++    "Welcome to Grist!": "به Grist خوش آمدید!",
++    "You have read-only access to this site. Currently there are no documents.": "شما دسترسی فقط‌خواندنی به این سایت دارید. در حال حاضر سندی وجود ندارد.",
++    "Browse Templates": "مرور الگوها"
++  },
++  "HomeIntroCards": {
++    "Learn more": "بیشتر بدانید",
++    "Templates": "الگوها",
++    "Tutorial": "آموزش",
++    "3 minute video tour": "تور ویدیویی ۳ دقیقه‌ای",
++    "Blank document": "سند خالی",
++    "Import file": "درون‌ریزی پرونده",
++    "Webinars": "وبینارها"
++  },
++  "HomeLearningResources": {
++    "Help Center": "مرکز راهنما",
++    "Video Tour": "تور ویدیویی",
++    "Webinars": "وبینارها"
++  },
++  "HomeLeftPane": {
++    "Delete": "حذف",
++    "Access Details": "جزئیات دسترسی",
++    "Import from Airtable": "درون‌ریزی از Airtable",
++    "Manage users": "مدیریت کاربران",
++    "Rename": "تغییر نام",
++    "Examples & Templates": "الگوها",
++    "Tutorial": "آموزش",
++    "All documents": "همه اسناد",
++    "Create empty document": "ایجاد سند خالی",
++    "Import document": "درون‌ریزی سند",
++    "Import from {{importSource}}": "درون‌ریزی از {{importSource}}",
++    "Import from...": "درون‌ریزی از...",
++    "Trash": "زباله‌دان",
++    "Workspaces": "فضاهای کاری"
++  },
++  "HomeNewDocBlock": {
++    "Templates": "الگوها",
++    "Blank document": "سند خالی",
++    "Import file": "درون‌ریزی پرونده"
++  },
++  "Importer": {
++    "Merge rows that match these fields:": "ادغام ردیف‌هایی که در این فیلدها برابرند:",
++    "Select fields to match on": "انتخاب فیلدهای مقابله",
++    "Update existing records": "به‌روزرسانی رکوردهای موجود",
++    "{{count}} unmatched field in import_one": "{{count}} فیلد بی‌‌مانند در درون‌ریزی",
++    "{{count}} unmatched field in import_other": "{{count}} فیلد بی‌مانند در درون‌ریزی",
++    "{{count}} unmatched field_one": "{{count}} فیلد بی‌مانند",
++    "{{count}} unmatched field_other": "{{count}} فیلد بی‌مانند",
++    "Column Mapping": "نگاشت ستون",
++    "Column mapping": "نگاشت ستون",
++    "Destination table": "جدول مقصد",
++    "Grist column": "ستون Grist",
++    "Import from file": "درون‌ریزی از پرونده",
++    "New Table": "جدول جدید",
++    "Revert": "بازگردانی",
++    "Skip": "رد کردن",
++    "Skip Import": "رد کردن درون‌ریزی",
++    "Skip Table on Import": "هنگام درون‌ریزی این جدول را رد کن",
++    "Source column": "ستون مبدأ",
++    "Import options": "گزینه‌های درون‌ریزی",
++    "Cancel": "لغو",
++    "Import": "درون‌ریزی"
++  },
++  "InstallationIdBlock": {
++    "Copy": "کپی",
++    "Copy to clipboard": "کپی به کلیپ‌بورد",
++    "Installation ID": "شناسه نصب",
++    "Installation ID copied to clipboard": "شناسه نصب در کلیپ‌بورد کپی شد"
++  },
++  "LanguageMenu": {
++    "Language": "زبان"
++  },
++  "LeftPanelCommon": {
++    "Help Center": "مرکز راهنما",
++    "Accessibility": "دسترس‌پذیری",
++    "(Screen reader improvements enabled)": "(بهبودهای خواناگر فعال است)",
++    "Screen reader improvements enabled": "بهبودهای خواناگر فعال شد"
++  },
++  "MakeCopyMenu": {
++    "Cancel": "لغو",
++    "Learn more": "بیشتر بدانید",
++    "Name": "نام",
++    "Sign up": "ثبت‌نام",
++    "Download": "بارگیری",
++    "Workspace": "فضای کاری",
++    "Enter document name": "نام سند را وارد کنید",
++    "As template": "به‌عنوان الگو"
++  },
++  "MappedFieldsConfig": {
++    "Clear": "پاک کردن",
++    "Select all": "انتخاب همه",
++    "Hide {{label}}": "پنهان کردن {{label}}",
++    "Hide {{label}} (batch mode)": "پنهان کردن {{label}} (حالت دسته‌ای)",
++    "Map fields": "نگاشت فیلدها",
++    "Mapped": "نگاشت‌شده",
++    "Unmap fields": "لغو نگاشت فیلدها",
++    "Unmapped": "نگاشت‌نشده"
++  },
++  "MentionTextBox": {
++    "...loading": "...در حال بارگذاری"
++  },
++  "Menu": {
++    "Copy": "کپی",
++    "Columns": "ستون‌ها",
++    "Cut": "برش",
++    "Paste": "چسباندن",
++    "More": "بیشتر",
++    "Building blocks": "اجزای سازنده"
++  },
++  "NTextBox": {
++    "false": "نادرست",
++    "true": "درست",
++    "Field Format": "قالب فیلد",
++    "Lines": "خطوط",
++    "Multi line": "چندخطی",
++    "Single line": "تک‌خطی",
++    "Maximum characters": "بیشینه تعداد نویسه"
++  },
++  "NotificationsAndAutomationsNudge": {
++    "{{count}} people have asked for this._one": "{{count}} نفر این را خواسته‌اند.",
++    "{{count}} people have asked for this._other": "{{count}} نفر این را خواسته‌اند.",
++    "You and {{count}} others have asked for this._one": "شما و {{count}} نفر دیگر این را خواسته‌اید.",
++    "You and {{count}} others have asked for this._other": "شما و {{count}} نفر دیگر این را خواسته‌اید.",
++    "1 person has asked for this.": "۱ نفر این را خواسته است.",
++    "Add a note": "افزودن یادداشت",
++    "Ask the admin for this": "این را از مدیر بخواهید",
++    "Next step": "مرحله بعد",
++    "Note sent.": "یادداشت ارسال شد.",
++    "You've asked for this.": "شما این را خواسته‌اید.",
++    "Ask questions and build formulas in plain language.": "سؤال بپرسید و به زبان ساده فرمول بسازید."
++  },
++  "NotifyUI": {
++    "Notifications": "اعلان‌ها",
++    "Upgrade Plan": "ارتقای طرح",
++    "Ask for help": "درخواست کمک"
++  },
++  "NumericTextBox": {
++    "Currency": "واحد پول",
++    "Decimals": "دهمیک‌ها",
++    "Default currency ({{defaultCurrency}})": "واحد پول پیش‌فرض ({{defaultCurrency}})",
++    "Number Format": "قالب عدد",
++    "Field Format": "قالب فیلد",
++    "Spinner": "شمارنده",
++    "Text": "متن",
++    "max": "بیشینه",
++    "min": "کمینه"
++  },
++  "OnBoardingPopups": {
++    "Finish": "پایان",
++    "Next": "بعدی",
++    "Previous": "قبلی"
++  },
++  "OnboardingCards": {
++    "3 minute video tour": "تور ویدیویی ۳ دقیقه‌ای"
++  },
++  "OnboardingPage": {
++    "Other": "سایر",
++    "Back": "بازگشت",
++    "Next step": "مرحله بعد"
++  },
++  "OpenAccessibilityModal": {
++    "Close": "بستن",
++    "Accessibility": "دسترس‌پذیری",
++    " or ": " یا ",
++    "\"Regions\" are what we call the different parts of the user interface:": "«ناحیه» نام بخش‌های مختلف رابط کاربری است:"
++  },
++  "OpenVideoTour": {
++    "Video Tour": "تور ویدیویی"
++  },
++  "OutgoingRequestsStatus": {
++    "checking": "در حال بررسی",
++    "Checking…": "در حال بررسی…",
++    "How user actions can reach the outside world": "کنش‌های کاربر چگونه می‌توانند به بیرون برسند",
++    "Outgoing requests": "درخواست‌های خروجی"
++  },
++  "PageWidgetPicker": {
++    "Add to page": "افزودن به صفحه",
++    "Building {{- label}} widget": "در حال ساخت ابزارک {{- label}}",
++    "Group by": "گروه‌بندی بر اساس",
++    "Select data": "انتخاب داده",
++    "Select widget": "انتخاب ابزارک",
++    "New Table": "جدول جدید",
++    "SELECT BY": "انتخاب بر اساس",
++    "{{table}} grouped by… (press to select fields)": "{{table}} گروه‌بندی‌شده بر اساس… (برای انتخاب فیلدها بزنید)",
++    "Press Space to add fields": "برای افزودن فیلدها Space را بزنید",
++    "Create your own": "خودتان بسازید",
++    "More": "بیشتر",
++    "NEW": "جدید"
++  },
++  "Pages": {
++    "Delete": "حذف"
++  },
++  "ParseOptions": {
++    "Close": "بستن"
++  },
++  "PermissionsSetupSection": {
++    "Recommended": "توصیه‌شده",
++    "Allow anonymous access": "اجازه دسترسی ناشناس",
++    "Allow anonymous playground": "اجازه محیط آزمایشی ناشناس",
++    "Allow anyone to create team sites": "همه بتوانند سایت تیمی بسازند",
++    "Allow personal sites": "اجازه سایت‌های شخصی",
++    "Apply & restart": "اعمال و راه‌اندازی مجدد",
++    "Apply and go live!": "اعمال و فعال‌سازی",
++    "Applying settings and restarting…": "در حال اعمال تنظیمات و راه‌اندازی مجدد…",
++    "Back to installation": "بازگشت به صفحه نصب",
++    "Custom": "سفارشی",
++    "Grist is live!": "Grist فعال است!",
++    "Open": "باز کردن"
++  },
++  "PermissionsToggleModel": {
++    "Allow anonymous access": "اجازه دسترسی ناشناس",
++    "Allow anonymous playground": "اجازه محیط آزمایشی ناشناس",
++    "Allow anyone to create team sites": "همه بتوانند سایت تیمی بسازند",
++    "Allow personal sites": "اجازه سایت‌های شخصی",
++    "Permissions": "مجوزها"
++  },
++  "PermissionsWidget": {
++    "Checked": "انتخاب‌شده",
++    "Allow all": "اجازه به همه",
++    "Read only": "فقط خواندن"
++  },
++  "ProposedChangesPage": {
++    "Learn more": "بیشتر بدانید",
++    "Dismiss": "نادیده گرفتن",
++    "Suggest changes": "پیشنهاد تغییرات",
++    "Suggestions": "پیشنهادها",
++    "Accept": "پذیرفتن",
++    "experiment": "آزمایشی",
++    "Proposed changes": "تغییرات پیشنهادی",
++    "Work on a copy": "کار روی یک نسخه"
++  },
++  "QuickSetup": {
++    "Continue": "ادامه",
++    "Authentication": "احراز هویت",
++    "Sandboxing": "سندباکس",
++    "Backups": "پشتیبان‌گیری",
++    "Server": "سرور",
++    "Apply & restart": "اعمال و راه‌اندازی مجدد",
++    "Quick setup": "راه‌اندازی سریع"
++  },
++  "QuickSetupApplyStep": {
++    "Apply and go live!": "اعمال و فعال‌سازی",
++    "Applying settings and restarting…": "در حال اعمال تنظیمات و راه‌اندازی مجدد…",
++    "Back to installation": "بازگشت به صفحه نصب",
++    "Grist is live!": "Grist فعال است!"
++  },
++  "QuickSetupContinueButton": {
++    "Continue": "ادامه",
++    "Apply and Continue": "اعمال و ادامه",
++    "Applying...": "در حال اعمال..."
++  },
++  "QuickSetupServerStep": {
++    "Continue": "ادامه",
++    "Apply and Continue": "اعمال و ادامه",
++    "Base URL": "نشانی پایه",
++    "Edition": "نسخه",
++    "Server": "سرور"
++  },
++  "RecordLayoutEditor": {
++    "Cancel": "لغو",
++    "Add field": "افزودن فیلد"
++  },
++  "RefSelect": {
++    "Add column": "افزودن ستون"
++  },
++  "Reference": {
++    "CELL FORMAT": "قالب سلول"
++  },
++  "ReferenceUtils": {
++    "Error in dropdown condition": "خطا در شرط فهرست کشویی",
++    "No choices matching condition": "هیچ گزینه‌ای با شرط مطابقت ندارد",
++    "No choices to select": "گزینه‌ای برای انتخاب نیست"
++  },
++  "RenameDocModal": {
++    "Name": "نام",
++    "Enter document name": "نام سند را وارد کنید",
++    "Rename and set icon": "تغییر نام و تنظیم شمایل",
++    "Choose color": "انتخاب رنگ"
++  },
++  "ReverseReferenceConfig": {
++    "Delete": "حذف",
++    "Table": "جدول",
++    "Column": "ستون",
++    "Add two-way reference": "افزودن ارجاع دوطرفه"
++  },
++  "RightPanel": {
++    "CHART TYPE": "نوع نمودار",
++    "COLUMN TYPE": "نوع ستون",
++    "CUSTOM": "سفارشی",
++    "Change widget": "تغییر ابزارک",
++    "columns_one": "ستون",
++    "columns_other": "ستون‌ها",
++    "DATA TABLE": "جدول داده",
++    "DATA TABLE NAME": "نام جدول داده",
++    "Data": "داده",
++    "Detach": "جدا کردن",
++    "Edit data selection": "ویرایش انتخاب داده",
++    "fields_one": "فیلد",
++    "fields_other": "فیلد",
++    "GROUPED BY": "گروه‌بندی بر اساس",
++    "Row style": "سبک ردیف",
++    "SELECT BY": "انتخاب بر اساس",
++    "SELECTOR FOR": "انتخابگر برای",
++    "SOURCE DATA": "داده مبدأ",
++    "Save": "ذخیره",
++    "Select widget": "انتخاب ابزارک",
++    "series_one": "سری‌ها",
++    "series_other": "سری‌ها",
++    "Sort & filter": "مرتب‌سازی و فیلتر",
++    "TRANSFORM": "تبدیل",
++    "Theme": "پوسته",
++    "WIDGET TITLE": "عنوان ابزارک",
++    "Widget": "ابزارک",
++    "You do not have edit access to this document": "شما اجازه ویرایش این سند را ندارید",
++    "Add referenced columns": "افزودن ستون‌های ارجاع‌شده",
++    "Reset form": "بازنشانی فرم",
++    "Configuration": "پیکربندی",
++    "Default field value": "مقدار پیش‌فرض فیلد",
++    "Display button": "نمایش دکمه",
++    "Enter text": "متن را وارد کنید",
++    "Field rules": "قواعد فیلد",
++    "Field title": "عنوان فیلد",
++    "Hidden field": "فیلد پنهان",
++    "Layout": "چیدمان",
++    "Redirect automatically after submission": "پس از ثبت، خودکار تغییر مسیر بده",
++    "Redirection": "تغییر مسیر",
++    "Required field": "فیلد اجباری",
++    "Submission": "ثبت",
++    "Submit another response": "ثبت پاسخ دیگر",
++    "Submit button label": "برچسب دکمه ثبت",
++    "Success text": "متد موفقیت",
++    "Table column name": "نام ستون جدول",
++    "Enter redirect URL": "نشانی تغییر مسیر را وارد کنید",
++    "No field selected": "فیلدی انتخاب نشده",
++    "Select a field in the form widget to configure.": "برای پیکربندی، یک فیلد در ابزارک فرم انتخاب کنید.",
++    "Submit": "ثبت",
++    "Thank you! Your response has been recorded.": "سپاس! پاسخ شما ثبت شد.",
++    "Chart options": "گزینه‌های نمودار",
++    "You may use {{placeholder}} placeholder for the ID of the added record.": "می‌توانید از جایگزین {{placeholder}} برای شناسه رکورد افزوده‌شده استفاده کنید."
++  },
++  "RightPanelUtils": {
++    "series_one": "سری",
++    "series_other": "سری"
++  },
++  "RowContextMenu": {
++    "Copy anchor link": "کپی پیوند لنگر",
++    "Delete": "حذف",
++    "Duplicate rows_one": "تکثیر ردیف",
++    "Duplicate rows_other": "تکثیر ردیف‌ها",
++    "Insert row": "درج ردیف",
++    "Insert row above": "درج ردیف در بالا",
++    "Insert row below": "درج ردیف در پایین",
++    "View as card": "نمایش به‌صورت کارت",
++    "Use as table headers": "استفاده به‌عنوان سرستون‌های جدول"
++  },
++  "RowHeightConfig": {
++    "Change": "تغییر",
++    "Max height": "بیشینه ارتفاع",
++    "Max row height": "بیشینه ارتفاع ردیف"
++  },
++  "RowNumbersMenu": {
++    "Hidden": "پنهان",
++    "Numbers": "عدد",
++    "Row IDs": "شناسه ردیف‌ها",
++    "Row numbers": "شماره ردیف‌ها"
++  },
++  "SandboxSection": {
++    "Continue": "ادامه",
++    "Revert": "بازگردانی",
++    "Sandboxing": "سندباکس",
++    "Active": "فعال",
++    "Error": "خطا",
++    "Apply and Continue": "اعمال و ادامه",
++    "Recommended": "توصیه‌شده",
++    "Applying...": "در حال اعمال...",
++    "Not recommended": "توصیه نمی‌شود"
++  },
++  "ScreenReaderFormatters": {
++    "Checked": "انتخاب‌شده",
++    "Image": "تصویر"
++  },
++  "SearchModel": {
++    "Search all pages": "جست‌وجو در همه صفحات",
++    "Search all tables": "جست‌وجو در همه جدول‌ها"
++  },
++  "Section": {
++    "Description": "توضیح"
++  },
++  "SettingsLayout": {
++    "Authentication": "احراز هویت",
++    "Sandboxing": "سندباکس",
++    "Installation": "نصب",
++    "Current authentication method": "روش احراز هویت فعلی",
++    "Sandbox settings for data engine": "تنظیمات سندباکس موتور داده",
++    "Security Settings": "تنظیمات امنیت"
++  },
++  "SettingsLayout.d": {
++    "Authentication": "احراز هویت",
++    "Sandboxing": "سندباکس",
++    "Installation": "نصب",
++    "Current authentication method": "روش احراز هویت فعلی",
++    "Sandbox settings for data engine": "تنظیمات سندباکس موتور داده",
++    "Security Settings": "تنظیمات امنیت"
++  },
++  "SetupSteps": {
++    "AI Assistant": "دستیار هوش مصنوعی",
++    "Automations": "خودکارسازی‌ها"
++  },
++  "ShareMenu": {
++    "Access Details": "جزئیات دسترسی",
++    "Manage users": "مدیریت کاربران",
++    "Download": "بارگیری",
++    "Share": "اشتراک‌گذاری",
++    "Suggest changes": "پیشنهاد تغییرات",
++    "Download document...": "بارگیری سند...",
++    "Work on a copy": "کار روی یک نسخه",
++    "Back to current": "بازگشت به فعلی"
++  },
++  "SortConfig": {
++    "Add column": "افزودن ستون",
++    "Empty values last": "مقادیر خالی در انتها",
++    "Natural sort": "مرتب‌سازی طبیعی",
++    "Update data": "به‌روزرسانی داده",
++    "Use choice position": "استفاده از جایگاه گزینه",
++    "Search Columns": "جست‌وجوی ستون‌ها",
++    "Remove sort setting - {{- columnName }} column": "برداشتن تنظیم مرتب‌سازی - ستون {{- columnName }}",
++    "Sort in ascending order (current: descending)": "مرتب‌سازی افزایشی (فعلی: کاهشی)",
++    "Sort in descending order (current: ascending)": "مرتب‌سازی کاهشی (فعلی: افزایشی)",
++    "Sort options - {{- columnName }} column": "گزینه‌های مرتب‌سازی - ستون {{- columnName }}",
++    "{{- columnName }} column": "ستون {{- columnName }}",
++    "Empty values first": "اول مقادیر خالی"
++  },
++  "SortFilterConfig": {
++    "Save": "ذخیره",
++    "Revert": "بازگردانی",
++    "Filter": "فیلتر",
++    "Sort": "مرتب‌سازی"
++  },
++  "SupportGristButton": {
++    "Close": "بستن",
++    "Help Center": "مرکز راهنما",
++    "Support Grist": "حمایت از Grist",
++    "Admin Panel": "پیشخوان مدیریت",
++    "Opt in to Telemetry": "مشارکت در تله‌متری",
++    "Opted In": "مشارکت کرده"
++  },
++  "SupportGristNudge": {
++    "Close": "بستن",
++    "Help Center": "مرکز راهنما",
++    "Support Grist": "حمایت از Grist",
++    "Admin Panel": "پیشخوان مدیریت",
++    "Opt in to Telemetry": "مشارکت در تله‌متری",
++    "Opted In": "مشارکت کرده"
++  },
++  "SupportGristPage": {
++    "Help Center": "مرکز راهنما",
++    "Support Grist": "حمایت از Grist",
++    "Home": "خانه",
++    "Opt in to Telemetry": "مشارکت در تله‌متری",
++    "Sponsor": "حمایت مالی",
++    "Telemetry": "تله‌متری"
++  },
++  "ThemeConfig": {
++    "Appearance ": "ظاهر ",
++    "Switch appearance automatically to match system": "تغییر خودکار ظاهر بر پایه سیستم",
++    "Dark": "تیره",
++    "Light": "روشن",
++    "Light (High Contrast)": "روشن (تضاد بالا)"
++  },
++  "TimingPage": {
++    "Formula timer": "زمان‌سنج فرمول"
++  },
++  "Toggle": {
++    "Field Format": "قالب فیلد",
++    "Checkbox": "جعبه انتخاب",
++    "Switch": "کلید"
++  },
++  "ToggleEnterpriseWidget": {
++    "Copy": "کپی",
++    "Copy to clipboard": "کپی به کلیپ‌بورد",
++    "Activate": "فعال‌سازی",
++    "Enable Grist Enterprise": "فعال‌سازی Grist Enterprise",
++    "Installation ID": "شناسه نصب",
++    "Installation ID copied to clipboard": "شناسه نصب در کلیپ‌بورد کپی شد",
++    "Activation key": "کلید فعال‌سازی"
++  },
++  "Tools": {
++    "Access Rules": "قواعد دسترسی",
++    "Code view": "نمای کد",
++    "Delete": "حذف",
++    "Delete document tour?": "گره‌گذار سند حذف شود؟",
++    "Document history": "تاریخچه سند",
++    "How-to Tutorial": "آموزش گام‌به‌گام",
++    "Raw data": "داده خام",
++    "Return to viewing as yourself": "بازگشت به مشاهده به‌عنوان خودتان",
++    "TOOLS": "ابزارها",
++    "Tour of this Document": "گشتی در این سند",
++    "Validate Data": "اعتبارسنجی داده",
++    "Settings": "تنظیمات",
++    "API console": "کنسول API",
++    "context menu - Access Rules": "فهرست زمینه - قواعد دسترسی",
++    "Delete document tour": "حذف گره‌گذار سند",
++    "Preview the tutorial": "پیش‌نمایش آموزش",
++    "Proposed changes": "تغییرات پیشنهادی",
++    "Suggest changes": "پیشنهاد تغییرات",
++    "Suggestions": "پیشنهادها"
++  },
++  "TopBar": {
++    "Manage team": "مدیریت تیم",
++    "Redo": "ازنو",
++    "Undo": "واگرد"
++  },
++  "TopProblems": {
++    "{{count}} warnings_other": "{{count}} هشدار",
++    "Dismiss": "نادیده گرفتن",
++    "{{count}} dismissed_one": "{{count}} نادیده‌گرفته‌شده",
++    "{{count}} dismissed_other": "{{count}} نادیده‌گرفته‌شده",
++    "Show": "نمایش"
++  },
++  "TriggerFormulas": {
++    "Cancel": "لغو",
++    "Close": "بستن",
++    "OK": "باشه",
++    "Apply on record changes": "اعمال هنگام تغییر رکوردها",
++    "Apply to new records": "اعمال بر رکوردهای جدید",
++    "Select fields": "انتخاب فیلدها",
++    "Any field": "هر فیلد"
++  },
++  "TriggersPageUpsell": {
++    "Learn more.": "بیشتر بدانید.",
++    "Try for free": "آزمایش رایگان",
++    "Try full Grist": "آزمایش Grist کامل"
++  },
++  "TypeTransform": {
++    "Apply": "اعمال",
++    "Cancel": "لغو",
++    "Preview": "پیش‌نمایش",
++    "Revise": "بازنگری",
++    "Update formula (Shift+Enter)": "به‌روزرسانی فرمول (Shift+Enter)"
++  },
++  "TypeTransformation": {
++    "Cancel": "لغو",
++    "Apply": "اعمال",
++    "Preview": "پیش‌نمایش",
++    "Update formula (Shift+Enter)": "به‌روزرسانی فرمول (Shift+Enter)",
++    "Revise": "بازنگری"
++  },
++  "UnmappedFieldsConfig": {
++    "Clear": "پاک کردن",
++    "Select all": "انتخاب همه",
++    "Map fields": "نگاشت فیلدها",
++    "Mapped": "نگاشت‌شده",
++    "Unmap fields": "لغو نگاشت فیلدها",
++    "Unmapped": "نگاشت‌نشده"
++  },
++  "UserManager": {
++    "Cancel": "لغو",
++    "Close": "بستن",
++    "Confirm": "تأیید",
++    "Copy link": "کپی پیوند",
++    "Off": "خاموش",
++    "On": "روشن",
++    "Link copied to clipboard": "پیوند در کلیپ‌بورد کپی شد",
++    "Anyone with link ": "هرکس با پیوند "
++  },
++  "UserManagerModel": {
++    "None": "هیچ",
++    "Editor": "ویرایشگر",
++    "Owner": "مالک"
++  },
++  "ValidationPanel": {
++    "Update formula (Shift+Enter)": "به‌روزرسانی فرمول (Shift+Enter)"
++  },
++  "ViewAsDropdown": {
++    "View as": "مشاهده به‌عنوان",
++    "Example Users": "کاربران نمونه",
++    "Users from table": "کاربران از جدول"
++  },
++  "ViewConfigTab": {
++    "Advanced settings": "تنظیمات پیشرفته",
++    "Blocks": "بلوک‌ها",
++    "Compact": "فشرده",
++    "Edit card layout": "ویرایش چیدمان کارت",
++    "Form": "فرم",
++    "Plugin: ": "افزونه: ",
++    "Section: ": "بخش: "
++  },
++  "ViewLayout": {
++    "Delete": "حذف",
++    "Raw Data page": "صفحه داده خام"
++  },
++  "ViewLayoutMenu": {
++    "Copy anchor link": "کپی پیوند لنگر",
++    "Add to page": "افزودن به صفحه",
++    "Duplicate widget": "تکثیر ابزارک",
++    "Edit card layout": "ویرایش چیدمان کارت",
++    "Open configuration": "باز کردن پیکربندی"
++  },
++  "ViewSectionMenu": {
++    "(customized)": "(سفارشی‌شده)",
++    "(empty)": "(خالی)",
++    "(modified)": "(تغییریافته)",
++    "Custom options": "گزینه‌های سفارشی",
++    "FILTER": "فیلتر",
++    "Revert": "بازگردانی",
++    "SORT": "مرتب‌سازی",
++    "Save": "ذخیره",
++    "Sort and filter": "مرتب‌سازی و فیلتر",
++    "Calendar view": "نمای تقویم"
++  },
++  "VisibleFieldsConfig": {
++    "Cannot drop items into Hidden Fields": "نمی‌توان موردی را در فیلدهای پنهان رها کرد",
++    "Clear": "پاک کردن",
++    "Hidden Fields cannot be reordered": "ترتیب فیلدهای پنهان قابل تغییر نیست",
++    "Select all": "انتخاب همه",
++    "Visible {{label}}": "قابل مشاهده {{label}}",
++    "Hide {{label}}": "پنهان کردن {{label}}",
++    "Hidden {{label}}": "پنهان {{label}}",
++    "Show {{label}}": "نمایش {{label}}",
++    "Hide {{label}} (batch mode)": "پنهان کردن {{label}} (حالت دسته‌ای)",
++    "Show {{label}} (batch mode)": "نمایش {{label}} (حالت دسته‌ای)",
++    "Clear hidden columns filter": "پاک کردن فیلتر ستون‌های پنهان",
++    "Clear visible columns filter": "پاک کردن فیلتر ستون‌های قابل مشاهده",
++    "Filter": "فیلتر",
++    "Filter hidden columns": "فیلتر ستون‌های پنهان",
++    "Filter visible columns": "فیلتر ستون‌های قابل مشاهده"
++  },
++  "WebhookPage": {
++    "Name": "نام",
++    "Table": "جدول",
++    "URL": "نشانی"
++  },
++  "WelcomeSitePicker": {
++    "Sign in": "ورود",
++    "Ask an administrator to add you to a team site.": "از یک مدیر بخواهید شما را به یک سایت تیمی اضافه کند."
++  },
++  "WelcomeTour": {
++    "Help Center": "مرکز راهنما",
++    "Add new": "افزودن",
++    "AI Assistant": "دستیار هوش مصنوعی",
++    "Share": "اشتراک‌گذاری",
++    "Reference": "ارجاع",
++    "Welcome to Grist!": "به Grist خوش آمدید!"
++  },
++  "WidgetCreatorSectionConfig": {
++    "Close editor": "بستن ویرایشگر",
++    "Edit source": "ویرایش منبع",
++    "Use assistant": "استفاده از دستیار",
++    "Ask assistant": "پرسیدن از دستیار"
++  },
++  "WidgetCreatorView": {
++    "Save": "ذخیره",
++    "Learn more": "بیشتر بدانید",
++    "Close editor": "بستن ویرایشگر",
++    "Edit source": "ویرایش منبع",
++    "or": "یا",
++    "Saved": "ذخیره شد",
++    "Use assistant": "استفاده از دستیار",
++    "Ask the assistant": "از دستیار بپرسید",
++    "Source": "منبع"
++  },
++  "WidgetTitle": {
++    "Cancel": "لغو",
++    "DATA TABLE NAME": "نام جدول داده",
++    "Override widget title": "بازنویسی عنوان ابزارک",
++    "Provide a table name": "یک نام جدول بدهید",
++    "Save": "ذخیره",
++    "This table is managed by Grist and cannot be modified": "این جدول توسط Grist مدیریت می‌شود و قابل تغییر نیست",
++    "WIDGET TITLE": "عنوان ابزارک",
++    "WIDGET DESCRIPTION": "توضیح ابزارک"
++  },
++  "apiconsole": {
++    "Delete": "حذف",
++    "Are you sure you want to delete the following?": "آیا از حذف موارد زیر مطمئن هستید؟"
++  },
++  "buildReassignModal": {
++    "Cancel": "لغو"
++  },
++  "commandList": {
++    "Copy anchor link": "کپی پیوند لنگر",
++    "Show hidden columns": "نمایش ستون‌های پنهان"
++  },
++  "duplicateWidget": {
++    "Active": "فعال",
++    "Duplicate widget": "تکثیر ابزارک"
++  },
++  "errorPages": {
++    "Sign in": "ورود",
++    "Sign up": "ثبت‌نام",
++    "Add account": "افزودن حساب",
++    "Build your own form": "فرم خود را بسازید",
++    "Powered by": "توانا ساخته‌شده با",
++    "An unknown error occurred.": "خطای ناشناخته‌ای رخ داد.",
++    "changes": "تغییرات"
++  },
++  "menus": {
++    "* Workspaces are available on team plans. ": "* فضاهای کاری در طرح‌های تیمی در دسترس‌اند.",
++    "Select fields": "انتخاب فیلدها",
++    "Upgrade now": "اکنون ارتقا دهید",
++    "Loading...": "در حال بارگذاری..."
++  },
++  "modals": {
++    "Cancel": "لغو",
++    "Ok": "باشه",
++    "Save": "ذخیره",
++    "Are you sure you want to delete these records?": "آیا از حذف این رکوردها مطمئن هستید؟",
++    "Are you sure you want to delete this record?": "آیا از حذف این رکورد مطمئن هستید؟",
++    "Delete": "حذف",
++    "Dismiss": "نادیده گرفتن",
++    "Don't ask again.": "دوباره نپرس.",
++    "Don't show again.": "دوباره نشان نده.",
++    "Don't show tips": "نکته‌ها را نشان نده",
++    "Undo to restore": "برای بازیابی Undo را بزنید",
++    "Got it": "فهمیدم",
++    "Don't show again": "دوباره نشان نده",
++    "TIP": "نکته",
++    "Confirm": "تأیید"
++  },
++  "pages": {
++    "Duplicate page": "تکثیر صفحه",
++    "Remove": "برداشتن",
++    "Rename": "تغییر نام",
++    "You do not have edit access to this document": "شما اجازه ویرایش این سند را ندارید",
++    "(default)": "(پیش‌فرض)",
++    "Collapse {{maybeDefault}}": "بستن {{maybeDefault}}",
++    "Expand {{maybeDefault}}": "باز کردن {{maybeDefault}}",
++    "Set default: Collapse": "تنظیم پیش‌فرض: بسته",
++    "Set default: Expand": "تنظیم پیش‌فرض: باز",
++    "context menu - {{- pageName }}": "فهرست زمینه - {{- pageName }}"
++  },
++  "search": {
++    "Find Next ": "یافتن بعدی",
++    "Find Previous ": "یافتن قبلی",
++    "No results": "نتیجه‌ای نبود",
++    "Search in document": "جست‌وجو در سند",
++    "Search": "جست‌وجو",
++    "Close search bar": "بستن نوار جست‌وجو"
++  },
++  "searchDropdown": {
++    "Search": "جست‌وجو"
++  },
++  "selectBy": {
++    "Select widget": "انتخاب ابزارک"
++  },
++  "startDocAirtableImport": {
++    "Import from Airtable": "درون‌ریزی از Airtable"
++  },
++  "startDocGristImport": {
++    "Copy data from another document": "کپی داده از سند دیگر"
++  },
++  "startHomeAirtableImport": {
++    "Import from Airtable": "درون‌ریزی از Airtable"
++  },
++  "startHomeGristImport": {
++    "Copy data from another document": "کپی داده از سند دیگر"
++  },
++  "widgetTypesMap": {
++    "Calendar": "تقویم",
++    "Card": "کارت",
++    "Card List": "فهرست کارت",
++    "Chart": "نمودار",
++    "Custom": "سفارشی",
++    "Form": "فرم",
++    "Table": "جدول"
+   }
+-}
++}
+\ No newline at end of file
+diff --git a/assets/locales/fa.server.json b/assets/locales/fa.server.json
+index 0967ef4..59b3595 100644
+--- a/assets/locales/fa.server.json
++++ b/assets/locales/fa.server.json
+@@ -1 +1,25 @@
+-{}
++{
++  "DocApi": {
++    "UntitledDocument": "سند بی‌نام"
++  },
++  "access": {
++    "docDisabled": "این سند از کار افتاده است.",
++    "docNoAccess": "شما دسترسی به این سند ندارید.",
++    "userDisabled": "کاربر غیرفعال است (دلیل: {{- reason }})",
++    "userDisabledReasonMissing": "دلیلی ذکر نشده"
++  },
++  "admin": {
++    "emptyOrg": "مالکی در سازمان مدیریتی تعریف‌شده با `GRIST_INSTALL_ADMIN_ORG={{org}}` پیدا نشد",
++    "orgUser": "کاربر مالک سازمان مدیریتی تعریف‌شده با `GRIST_INSTALL_ADMIN_ORG={{org}}` است",
++    "noAdminEmail": "حساب مدیریتی وجود ندارد چون `GRIST_ADMIN_EMAIL` و `GRIST_DEFAULT_EMAIL` تنظیم نشده‌اند",
++    "accountByEmail": "حساب مدیریتی تعریف‌شده با `GRIST_DEFAULT_EMAIL={{defaultEmail}}`"
++  },
++  "oidc": {
++    "emailNotVerifiedError": "لطفاً رایانامه خود را در ارائه‌دهنده هویت تأیید کنید و دوباره وارد شوید."
++  },
++  "sendAppPage": {
++    "Loading...": "در حال بارگذاری...",
++    "og-description": "یک صفحه‌گستر الگوی مدرن و متن‌باز که فراتر از شبکه می‌رود",
++    "og-title": "Grist، تحول صفحه‌گسترها"
++  }
++}
+\ No newline at end of file
+diff --git a/test/server/lib/sendAppPage.ts b/test/server/lib/sendAppPage.ts
+index 73c827d..107a7d5 100644
+--- a/test/server/lib/sendAppPage.ts
++++ b/test/server/lib/sendAppPage.ts
+@@ -1,9 +1,49 @@
+-import { makeGristConfig } from "app/server/lib/sendAppPage";
++import { getLanguageAttributes, makeGristConfig } from "app/server/lib/sendAppPage";
+ import * as testUtils from "test/server/testUtils";
+ 
+ import { assert } from "chai";
+ 
+ describe("sendAppPage", function() {
++  describe("getLanguageAttributes", function() {
++    // A fake request is enough: the language is already resolved by the time the page is rendered.
++    const req = (language: string) => ({language} as any);
++
++    it("should mark right-to-left languages, and Persian to use the Jalali calendar", function() {
++      const config = {supportedLngs: ["en", "fa", "ar", "he"]} as any;
++      assert.equal(getLanguageAttributes(req("fa"), config),
++        'lang="fa" dir="rtl" data-calendar="jalali"');
++      assert.equal(getLanguageAttributes(req("ar"), config), 'lang="ar" dir="rtl"');
++      assert.equal(getLanguageAttributes(req("he"), config), 'lang="he" dir="rtl"');
++      assert.equal(getLanguageAttributes(req("en"), config), 'lang="en" dir="ltr"');
++      assert.equal(getLanguageAttributes(req("de"), config), 'lang="en" dir="ltr"');
++    });
++
++    it("should reduce a regional variant to the language that is offered", function() {
++      const config = {supportedLngs: ["en", "fa"]} as any;
++      assert.equal(getLanguageAttributes(req("fa-IR"), config),
++        'lang="fa" dir="rtl" data-calendar="jalali"');
++      assert.equal(getLanguageAttributes(req("en-GB"), config), 'lang="en" dir="ltr"');
++    });
++
++    it("should prefer the user's stored locale over the request's language", function() {
++      const config = {supportedLngs: ["en", "fa"], userLocale: "fa"} as any;
++      assert.equal(getLanguageAttributes(req("en"), config),
++        'lang="fa" dir="rtl" data-calendar="jalali"');
++    });
++
++    it("should still work for pages served without a gristConfig", function() {
++      // The published form and custom-widget.html are rendered with an empty config, which used to
++      // mean "English"; the language i18next resolved is trusted instead.
++      assert.equal(getLanguageAttributes(req("fa"), {} as any),
++        'lang="fa" dir="rtl" data-calendar="jalali"');
++      assert.equal(getLanguageAttributes(req("fr"), {} as any), 'lang="fr" dir="ltr"');
++      assert.equal(getLanguageAttributes(req("zh-CN"), {} as any), 'lang="zh" dir="ltr"');
++      // Anything that cannot be a language tag is not echoed into the markup.
++      assert.equal(getLanguageAttributes(req('a" onload="alert(1)'), {} as any), 'lang="a" dir="ltr"');
++      assert.equal(getLanguageAttributes(req(""), {} as any), 'lang="en" dir="ltr"');
++    });
++  });
++
+   describe("makeGristConfig", function() {
+     let oldEnv: testUtils.EnvironmentSnapshot;
+ 

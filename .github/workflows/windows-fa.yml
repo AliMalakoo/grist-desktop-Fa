@@ -1,0 +1,61 @@
+name: Build Persian Windows installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  FORCE_COLOR: 1
+  GRIST_SKIP_EXT_AUTOSETUP: 1
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Preserve Unix paths and symlinks in the checkout
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.symlinks true
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Associate shell scripts with Git Bash
+        shell: cmd
+        run: |
+          assoc .sh=bashscript
+          ftype bashscript="%ProgramFiles%\Git\bin\bash.exe" "%1"
+      - name: Install dependencies
+        run: yarn install --network-timeout 300000 --ignore-optional --frozen-lockfile
+      - name: Prepare Persian core and Python sandbox
+        run: yarn run setup
+        env:
+          RUN_ARCH: x64
+      - name: Build
+        run: yarn run build
+      - name: Build and test Jalali calendar
+        shell: pwsh
+        run: |
+          yarn run build:tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:NODE_PATH = "$PWD/core/_build;$PWD/core/_build/ext;$PWD/core/_build/stubs"
+          node ./node_modules/mocha/bin/mocha.js core/_build/test/common/jalali.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke test
+        timeout-minutes: 20
+        run: yarn run test
+      - name: Package unsigned installer
+        run: yarn run electron --win nsis --x64
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grist-desktop-fa-windows-x64
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30

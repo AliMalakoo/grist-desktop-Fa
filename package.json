@@ -30,7 +30,7 @@
     "typescript": "4.7.4"
   },
   "scripts": {
-    "setup": "./scripts/setup.sh && cd core && yarn run install:python",
+    "setup": "node ./scripts/apply-persian.js && ./scripts/setup.sh && cd core && yarn run install:python",
     "build": "cd core && yarn run build:prod && resolve-tspaths -p tsconfig-ext.json",
     "build:tests": "cd core && ./node_modules/.bin/tsc --build test/tsconfig.json && resolve-tspaths -p test/tsconfig.json",
     "paths": "cd core && resolve-tspaths -p tsconfig-ext.json",

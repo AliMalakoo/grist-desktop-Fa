@@ -1,0 +1,5 @@
+# The grist-core commit this overlay was cut against. bin/rerecord.sh keeps it in step.
+UPSTREAM_SHA=6346baffa20fb2be715a4b2d800a51170167f522
+# Human note only -- not read by the scripts (grist-core version 1.7.22, master).
+UPSTREAM_TAG=v1.7.22
+UPSTREAM_URL=https://github.com/gristlabs/grist-core.git

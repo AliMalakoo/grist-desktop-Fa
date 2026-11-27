@@ -1,0 +1,383 @@
+/*
+ * Right-to-left interface: Persian (fa), Arabic (ar), Urdu (ur), Hebrew (he), Pashto (ps), ...
+ *
+ * Everything here is gated on <html dir="rtl">, which the server sets when it renders the page
+ * (getLanguageAttributes() in app/server/lib/sendAppPage.ts) and the client keeps in step
+ * (applyLanguageToDocument() in app/client/lib/localization.ts). In an English document this file
+ * contributes nothing.
+ *
+ * Most of the mirroring needs no CSS at all: Grist's chrome is built from flexbox and inline
+ * text, and `direction: rtl` reverses both. What this file does is (1) undo the few places that
+ * assume left-is-first physically, (2) keep the data grid's geometry intact -- GridView measures
+ * and scrolls its columns by hand -- and (3) give Persian and Arabic readers the fonts, cell
+ * direction and digit rendering they expect.
+ */
+
+/* ------------------------------------------------------------------------- *
+ * 1. Type
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Persian and Arabic script needs a font with real coverage of it; the default stack is built for
+ * Latin. Order: a webfont if the installation ships one, then whatever the OS has, then the
+ * generic fallbacks. Tahoma is deliberately early -- on Windows it is the only preinstalled font
+ * with decent Persian hinting.
+ */
+html[dir="rtl"] body,
+html[dir="rtl"] .field_clip,
+html[dir="rtl"] .column_name,
+html[dir="rtl"] .g-record-text-label,
+html[dir="rtl"] .celleditor_cursor_editor,
+html[dir="rtl"] input,
+html[dir="rtl"] textarea,
+html[dir="rtl"] select,
+html[dir="rtl"] button {
+  font-family: "Vazirmatn", "Noto Sans Arabic", "Segoe UI", Tahoma, "Iranian Sans", Arial,
+    "Noto Sans", sans-serif;
+}
+
+/* Persian text looks cramped at Grist's compact line heights. */
+html[dir="rtl"] .field_clip,
+html[dir="rtl"] .g_record_detail_value {
+  line-height: 1.6;
+}
+
+/* The calendar row in the date widget's config panel explains itself in a small gray line. */
+html[dir="rtl"] .jjp-toggle-hint {
+  font-size: 11px;
+  color: var(--grist-theme-text-light, #6b6b6b);
+  text-align: start;
+}
+html[dir="rtl"] .jjp-toggle-label {
+  margin-inline-start: 6px;
+}
+
+/* ------------------------------------------------------------------------- *
+ * 2. The data grid: content mirrors, geometry does not
+ * ------------------------------------------------------------------------- */
+
+/*
+ * GridView positions columns and rows from measured offsets and drives the pane with scrollLeft,
+ * so a mirrored scroll pane would place every column wrong. Keep the frames left-to-right; the
+ * cells inside them read right-to-left.
+ */
+html[dir="rtl"] .grid_view_data,
+html[dir="rtl"] .gridview_data_scroll,
+html[dir="rtl"] .gridview_data_header,
+html[dir="rtl"] .column_names,
+html[dir="rtl"] .gridview_row,
+html[dir="rtl"] .gridview_data_row_num,
+html[dir="rtl"] .gridview_left_border,
+html[dir="rtl"] .frozen_line,
+html[dir="rtl"] .scroll_shadow_left,
+html[dir="rtl"] .scroll_shadow_frozen {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/*
+ * Default cell direction and alignment. `start` is what makes text hug the right edge in a
+ * right-to-left document; a column whose alignment was set explicitly keeps that choice, because
+ * the widget writes it as an inline style (see NTextBox.buildDom).
+ */
+html[dir="rtl"] .field_clip {
+  direction: rtl;
+  text-align: start;
+}
+
+/*
+ * Mixed Persian and Latin content reads best when each run keeps its own direction, which is what
+ * plaintext gives us: a cell holding "کد 12345" starts at the right, a cell holding only English
+ * starts at the left of the same space rather than looking indented.
+ */
+html[dir="rtl"] .field_clip,
+html[dir="rtl"] .celleditor_text_editor,
+html[dir="rtl"] .g_record_detail_value {
+  unicode-bidi: plaintext;
+}
+
+/* Numbers stay left-to-right inside RTL text; they are Latin-script data in a Persian document. */
+html[dir="rtl"] .field_clip.numbox {
+  unicode-bidi: embed;
+  text-align: end;
+}
+
+/* Column headers: right-aligned, but the resize handle and menu button keep their side. */
+html[dir="rtl"] .column_name .g-column-label {
+  direction: rtl;
+  text-align: start;
+}
+html[dir="rtl"] .g-column-main-menu {
+  right: 2px;
+  left: auto;
+}
+
+/* Row numbers and the row menu: .gridview_data_row_num stays LTR above, so its children do. */
+html[dir="rtl"] .gridview_data_row_info {
+  direction: rtl;
+}
+
+/* ------------------------------------------------------------------------- *
+ * 3. Cell editors
+ * ------------------------------------------------------------------------- */
+
+html[dir="rtl"] .celleditor_cursor_editor,
+html[dir="rtl"] .celleditor_content_measure {
+  direction: rtl;
+  text-align: start;
+}
+
+/* The lock icon and the padding that makes room for it sit on the reading side. */
+html[dir="rtl"] .readonly_editor::before {
+  left: auto;
+  right: 0;
+}
+html[dir="rtl"] .readonly_editor .celleditor_cursor_editor .celleditor_text_editor,
+html[dir="rtl"] .readonly_editor .celleditor_cursor_editor .celleditor_content_measure {
+  padding-left: 3px;
+  padding-right: 18px;
+}
+
+/* The drop-down calendar: the Jalali picker mirrors its own arrows (see JalaliDatePicker.ts);
+ * the legacy bootstrap-datepicker needs the nudge. */
+html[dir="rtl"] .datepicker,
+html[dir="rtl"] .datepicker-dropdown {
+  direction: rtl;
+  text-align: right;
+}
+html[dir="rtl"] .datepicker .prev,
+html[dir="rtl"] .datepicker .next {
+  transform: scaleX(-1);
+}
+
+/* ------------------------------------------------------------------------- *
+ * 4. Record cards, detail view and forms
+ * ------------------------------------------------------------------------- */
+
+/*
+ * The cursor is drawn as a left border on the selected record (DetailView.css); in a right-to-left
+ * document the reading edge is the right one.
+ */
+html[dir="rtl"] .detailview_record_detail.active,
+html[dir="rtl"] .detailview_record_detail.selected {
+  margin-left: 0;
+  margin-right: -3px;
+  border-left: none;
+  border-right: 3px solid var(--grist-theme-cursor, var(--grist-color-light-green));
+}
+html[dir="rtl"] .detailview_record_detail.selected {
+  border-right-color: var(--grist-theme-cursor-inactive, var(--grist-color-inactive-cursor));
+}
+html[dir="rtl"] .detailview_scroll_pane {
+  padding-left: 0;
+  padding-right: 3px;
+  margin-left: 0;
+  margin-right: -3px;
+}
+html[dir="rtl"] .detail_row_num .menu_toggle {
+  margin-left: 0;
+  margin-right: 0.5rem;
+}
+
+/* Labels and values swap their physical spacing; labels keep the alignment of the language. */
+html[dir="rtl"] .g_record_detail_label {
+  text-align: start;
+}
+html[dir="rtl"] .detail_theme_field_compact .g_record_detail_label {
+  margin-left: 0;
+  margin-right: 3px;
+}
+html[dir="rtl"] .detail_theme_field_blocks .g_record_detail_label {
+  margin-left: 0;
+  margin-right: 3px;
+}
+html[dir="rtl"] .grist-single-record__menu__count {
+  text-align: left;
+  padding-right: 0;
+  padding-left: 1rem;
+}
+
+/* The record-layout editor's delete button and drag margins. */
+html[dir="rtl"] .g_record_delete_field {
+  right: auto;
+  left: 2px;
+}
+html[dir="rtl"] .g_record_layout_editing {
+  left: auto;
+  right: 0;
+  border-left: 1px solid var(--grist-theme-card-editing-layout-border, white);
+  border-right: 1px solid var(--grist-theme-card-editing-layout-border, var(--grist-color-dark-grey));
+}
+html[dir="rtl"] .record-layout-editor {
+  left: auto;
+  right: 0;
+}
+
+/* Fields with an error pin their marker to the reading edge. */
+html[dir="rtl"] .field_clip.invalid.field-error-C {
+  padding-left: 0;
+  padding-right: 18px;
+}
+html[dir="rtl"] .field_clip.invalid.field-error-C::before {
+  left: auto;
+  right: 2px;
+}
+html[dir="rtl"] .field.draft {
+  padding-right: 0;
+  padding-left: 18px;
+}
+
+/* Forms: published forms read right-to-left too (static/form.html gets the same dir attribute). */
+html[dir="rtl"] .form-style-wrapper input,
+html[dir="rtl"] .form-style-wrapper textarea,
+html[dir="rtl"] .form-style-wrapper select {
+  text-align: start;
+}
+
+/* ------------------------------------------------------------------------- *
+ * 5. Menus, panels and the rest of the chrome
+ * ------------------------------------------------------------------------- */
+
+/* Anything that was pinned to `left: 0` for a full-bleed strip is equally pinned to the right. */
+html[dir="rtl"] .dropdown-menu {
+  text-align: right;
+  left: auto;
+}
+html[dir="rtl"] #browser-check-problem {
+  left: auto;
+  right: 0;
+}
+html[dir="rtl"] .g-help {
+  left: auto;
+  right: 10%;
+}
+html[dir="rtl"] .add_section_btn {
+  text-align: right;
+}
+html[dir="rtl"] .add_section_icon {
+  margin-left: 0;
+  margin-right: 4px;
+}
+html[dir="rtl"] .section_icon,
+html[dir="rtl"] .plus_icon {
+  left: auto;
+  right: 0;
+}
+html[dir="rtl"] .layout_new,
+html[dir="rtl"] .layout_leaf_test {
+  border-left: 1px solid grey;
+  border-right: 1px solid lightgrey;
+}
+html[dir="rtl"] .error_details_inner {
+  padding-left: 4px;
+  padding-right: 28px;
+}
+html[dir="rtl"] .field_clip.markdown.overflowing::after {
+  right: auto;
+  left: 3px;
+}
+
+/*
+ * Menus, popovers and tooltips. Their own classes are generated at build time (grainjs `styled`),
+ * so there is nothing stable to select on beyond the plain element names Grist keeps on the
+ * containers -- which is exactly what we need: text direction, not layout. Popper positions them
+ * and follows `dir` on its own.
+ */
+html[dir="rtl"] .menu-list,
+html[dir="rtl"] .menu-header,
+html[dir="rtl"] .popup-outer-box,
+html[dir="rtl"] .popup-backdrop,
+html[dir="rtl"] .g-table-header,
+html[dir="rtl"] .g-tooltip,
+html[dir="rtl"] .grain-popmenu,
+html[dir="rtl"] [data-popper-placement] {
+  text-align: right;
+}
+html[dir="rtl"] .menu-list > *,
+html[dir="rtl"] .popup-inner-box > * {
+  direction: rtl;
+}
+
+/*
+ * Icons that mean "the other way". Mirroring them beats redrawing them, and it is what a Persian
+ * reader expects: «previous» points right here. Alignment icons (LeftAlign/RightAlign) are
+ * deliberately NOT mirrored -- they describe a physical edge that the widget still stores.
+ *
+ * Grist sets an icon's mask image inline (see app/client/ui2018/icons.ts), so the only handle CSS
+ * has on which icon an element holds is its style attribute.
+ */
+html[dir="rtl"] [style*="--icon-ArrowLeft"],
+html[dir="rtl"] [style*="--icon-ArrowRight"],
+html[dir="rtl"] [style*="--icon-PanelLeft"],
+html[dir="rtl"] [style*="--icon-PanelRight"],
+html[dir="rtl"] [style*="--icon-ExpandFold"],
+html[dir="rtl"] [style*="--icon-Collapse"],
+html[dir="rtl"] [style*="--icon-Expand"] {
+  transform: scaleX(-1);
+}
+
+/* ------------------------------------------------------------------------- *
+ * 6. Numbers and digits
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Numeric cells keep Latin digits (they come from Intl formatting in the document's locale, and
+ * changing them would break copy-paste and CSV round-trips). Persian date strings, which
+ * app/common/jalali.ts writes with Persian digits, must not be re-mirrored: a run of digits inside
+ * RTL text is handled by the bidirectional algorithm already.
+ */
+html[dir="rtl"] .field_clip.numbox,
+html[dir="rtl"] .numeric_input,
+html[dir="rtl"] input[type="number"] {
+  direction: ltr;
+  text-align: end;
+  unicode-bidi: embed;
+}
+
+/* Text inputs typed in Persian should start at the right edge, like the cells they mirror. */
+html[dir="rtl"] input[type="text"],
+html[dir="rtl"] textarea {
+  direction: rtl;
+}
+
+/* ...but anything that holds a path, URL, code or a Latin-shaped pattern reads left-to-right. */
+html[dir="rtl"] input[type="email"],
+html[dir="rtl"] input[type="url"],
+html[dir="rtl"] input[type="search"],
+html[dir="rtl"] .ace_editor,
+html[dir="rtl"] .formula-editor,
+html[dir="rtl"] .grist-code,
+html[dir="rtl"] code,
+html[dir="rtl"] pre {
+  direction: ltr;
+  text-align: start;
+}
+
+/* ------------------------------------------------------------------------- *
+ * 7. The calendar view (ToastUI)
+ * ------------------------------------------------------------------------- */
+
+/*
+ * ToastUI lays its day grid out with table cells and inline widths; the grid itself keeps its
+ * order, while headings and event titles read right-to-left.
+ */
+html[dir="rtl"] .toastui-calendar-layout {
+  direction: ltr;
+}
+html[dir="rtl"] .toastui-calendar-day-name__title,
+html[dir="rtl"] .toastui-calendar-template__dayname,
+html[dir="rtl"] .toastui-calendar-title-text,
+html[dir="rtl"] .toastui-calendar-month-item__title,
+html[dir="rtl"] .toastui-calendar-template__allday,
+html[dir="rtl"] .toastui-calendar-template__time,
+html[dir="rtl"] .toastui-calendar-week-container {
+  direction: rtl;
+  text-align: right;
+}
+html[dir="rtl"] .toastui-calendar-navigation button {
+  transform: scaleX(-1);
+}
+html[dir="rtl"] .toastui-calendar-narrow .toastui-calendar-template__title,
+html[dir="rtl"] .toastui-calendar-template__title {
+  text-align: right;
+}

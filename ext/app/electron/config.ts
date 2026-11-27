@@ -53,7 +53,7 @@ export async function loadConfig() {
   validateOrFallback(
     "GRIST_DESKTOP_USE_UPDATE",
     (useUpdate) => ["true", "false"].includes(useUpdate),
-    "true"
+    "false"
   )
   validateOrFallback(
     "GRIST_DEFAULT_USERNAME",
