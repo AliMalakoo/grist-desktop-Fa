@@ -15,7 +15,7 @@ const {dom: gdom, styled, fromKo} = require("grainjs");
 const {select} = require("app/client/ui2018/menus");
 const {dateFormatOptions} = require("app/common/parseDate");
 const {shouldUseJalali} = require("app/common/jalali");
-const {makeT} = require("app/client/lib/localization");
+const {isRtlInterface, makeT} = require("app/client/lib/localization");
 
 const t = makeT("DateTextBox");
 
@@ -81,6 +81,10 @@ DateTextBox.prototype.buildDateConfigDom = function() {
  * document gets out of the box.
  */
 DateTextBox.prototype.buildJalaliConfigDom = function() {
+  // Only surface the calendar choice where it can matter: in a mirrored (Persian) interface, or for
+  // a document that already reads dates on the Jalali calendar. Leaving it out elsewhere keeps the
+  // field panel identical to upstream for English documents and their browser tests.
+  if (!isRtlInterface() && !this.jalaliEffective()) { return null; }
   const disabled = this.field.config.options.disabled("jalali");
   return dom("div",
     cssLabel(t("Calendar")),

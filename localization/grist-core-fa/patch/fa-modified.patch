@@ -362,7 +362,7 @@ index 49b75d2..734bf9a 100644
  
    // Attach the datepicker.
 diff --git a/app/client/widgets/DateTextBox.js b/app/client/widgets/DateTextBox.js
-index fc7ed42..d13242b 100644
+index fc7ed421c..58c6af5a4 100644
 --- a/app/client/widgets/DateTextBox.js
 +++ b/app/client/widgets/DateTextBox.js
 @@ -14,6 +14,10 @@ const {cssTextInput} = require("app/client/ui2018/editableLabel");
@@ -370,7 +370,7 @@ index fc7ed42..d13242b 100644
  const {select} = require("app/client/ui2018/menus");
  const {dateFormatOptions} = require("app/common/parseDate");
 +const {shouldUseJalali} = require("app/common/jalali");
-+const {makeT} = require("app/client/lib/localization");
++const {isRtlInterface, makeT} = require("app/client/lib/localization");
 +
 +const t = makeT("DateTextBox");
  
@@ -390,7 +390,7 @@ index fc7ed42..d13242b 100644
    // An observable that always returns `UTC`, eases DateTimeEditor inheritance.
    this.timezone = ko.observable("UTC");
  }
-@@ -59,10 +70,52 @@ DateTextBox.prototype.buildDateConfigDom = function() {
+@@ -59,10 +70,56 @@ DateTextBox.prototype.buildDateConfigDom = function() {
        return cssRow(dom(
          textbox(this.dateFormat, { disabled }),
          dom.testId("Widget_dateCustomFormat")));
@@ -406,6 +406,10 @@ index fc7ed42..d13242b 100644
 + * document gets out of the box.
 + */
 +DateTextBox.prototype.buildJalaliConfigDom = function() {
++  // Only surface the calendar choice where it can matter: in a mirrored (Persian) interface, or for
++  // a document that already reads dates on the Jalali calendar. Leaving it out elsewhere keeps the
++  // field panel identical to upstream for English documents and their browser tests.
++  if (!isRtlInterface() && !this.jalaliEffective()) { return null; }
 +  const disabled = this.field.config.options.disabled("jalali");
 +  return dom("div",
 +    cssLabel(t("Calendar")),

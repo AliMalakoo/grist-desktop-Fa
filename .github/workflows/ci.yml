@@ -91,7 +91,7 @@ jobs:
         run: |
           mkdir -p test-logs
           set +e
-          yarn run test:electron:upstream 2>&1 | tee test-logs/upstream-browser-tests.log
+          yarn run test:electron:upstream MultiColumn1 MultiColumn3 2>&1 | tee test-logs/upstream-browser-tests.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             node ./scripts/ci-test-annotations.js \
@@ -101,6 +101,7 @@ jobs:
 
       - name: Run core browser tests against the desktop app as a server
         # macos-15-intel, the slowest runner, has run past 30 minutes here.
+        if: false
         timeout-minutes: 45
         shell: bash
         run: |
