@@ -27,7 +27,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 });
 
-process.once('loaded', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (global as any).isRunningUnderElectron = true;
-});
+// Expose the flag to the page, not just to the isolated preload world.
+contextBridge.exposeInMainWorld("isRunningUnderElectron", true);

@@ -163,6 +163,15 @@ async function startDriver() {
   // first.
   if (process.env.GRIST_DESKTOP_TEST_UPSTREAM === '1') {
     await wireUpstreamTestServer();
+    // Core's borrowed suites search for English UI text (for example, "Activity").
+    // Set the normal language preference just for this isolated browser profile;
+    // the desktop smoke tests still exercise the Persian default and RTL layout.
+    await driver.get(`http://localhost:${PORT}/`);
+    await driver.manage().addCookie({name: 'grist_user_locale', value: 'en', path: '/'});
+    await driver.navigate().refresh();
+    await driver.wait(async () => await driver.executeScript(
+      () => document.documentElement.lang === 'en' && document.documentElement.dir === 'ltr'
+    ), 30_000, 'Upstream browser suites require the English interface');
   }
   return driver;
 }

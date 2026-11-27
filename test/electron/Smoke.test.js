@@ -11,6 +11,34 @@ describe('Smoke', function () {
     await mw.driver.wait(async () => /Grist/.test(await mw.driver.getTitle()), 30_000);
   });
 
+  it('uses Persian, RTL and the bundled Vazirmatn font in the desktop window', async function () {
+    await mw.driver.wait(async () => (await mw.driver.executeScript(
+      () => document.documentElement.lang === 'fa' && document.documentElement.dir === 'rtl'
+    )), 30_000);
+    const font = await mw.driver.executeAsyncScript(async function (cb) {
+      try {
+        await document.fonts.load('16px \"Vazirmatn Variable\"', 'سلام');
+        cb({available: document.fonts.check('16px \"Vazirmatn Variable\"', 'سلام'),
+          family: getComputedStyle(document.body).fontFamily});
+      } catch (e) { cb({error: String(e)}); }
+    });
+    assert.isTrue(font.available, JSON.stringify(font));
+    assert.include(font.family, 'Vazirmatn');
+  });
+
+  it('respects an explicit English language preference and returns to the Persian default', async function () {
+    await mw.driver.manage().addCookie({name: 'grist_user_locale', value: 'en', path: '/'});
+    await mw.driver.navigate().refresh();
+    await mw.driver.wait(async () => await mw.driver.executeScript(
+      () => document.documentElement.lang === 'en' && document.documentElement.dir === 'ltr'
+    ), 30_000);
+    await mw.driver.manage().deleteCookie('grist_user_locale');
+    await mw.driver.navigate().refresh();
+    await mw.driver.wait(async () => await mw.driver.executeScript(
+      () => document.documentElement.lang === 'fa' && document.documentElement.dir === 'rtl'
+    ), 30_000);
+  });
+
   it('exposes the Grist API to anonymous sessions', async function () {
     const result = await mw.driver.executeAsyncScript(async function (cb) {
       try {
