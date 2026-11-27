@@ -21,7 +21,7 @@ const fontDest = path.join(core, 'static', 'vazirmatn');
 const checkOnly = process.argv.includes('--check');
 // Bumped when the desktop-side hooks below change. A prepared tree with an older value gets the
 // (idempotent) hooks applied again instead of requiring a fresh checkout.
-const DESKTOP_HOOKS = 2;
+const DESKTOP_HOOKS = 3;
 
 const read = p => fs.readFileSync(p, 'utf8');
 const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
@@ -126,8 +126,10 @@ function verifyTree() {
   }
   const themeFile = corePath('app/common/themes/Base.ts');
   const theme = fs.existsSync(themeFile) ? read(themeFile) : '';
-  if (!theme.includes('"Vazirmatn Variable"')) {
-    console.error('MISSING      Vazirmatn in app/common/themes/Base.ts'); problems++;
+  for (const [, to] of themeReplacements) {
+    if (!theme.includes(to)) {
+      console.error(`MISSING      ${to.slice(0, 40)}... in app/common/themes/Base.ts`); problems++;
+    }
   }
   const htmlFile = corePath('static/app.html');
   const html = fs.existsSync(htmlFile) ? read(htmlFile) : '';
@@ -240,12 +242,13 @@ function applyDesktopHooks() {
   // The default language inside the desktop. The layer's detectCurrentLang() checks this before
   // the browser/OS language, but after an explicit account locale or cookie.
   migrateLocaleHook();
-  replaceOnce('app/client/lib/localization.ts', LOCALE_FROM, LOCALE_TO, LOCALE_TO.trim());
-  // Vazirmatn is bundled with the app, so Persian text needs no network access.
+  replaceOnce('app/client/lib/localization.ts', LOCALE_FROM, LOCALE_TO);
+  // Vazirmatn is bundled with the app, so Persian text needs no network access. There are two
+  // stacks (the interface font and the data font), and each must be handled on its own.
   for (const [from, to] of themeReplacements) {
-    replaceOnce('app/common/themes/Base.ts', from, to, '"Vazirmatn Variable"');
+    replaceOnce('app/common/themes/Base.ts', from, to);
   }
-  replaceOnce('static/app.html', appHtmlFrom, appHtmlTo, 'vazirmatn/vazirmatn.css');
+  replaceOnce('static/app.html', appHtmlFrom, appHtmlTo);
 }
 
 // Upgrade the hook written by the first Persian build, without needing a clean checkout.
@@ -257,12 +260,13 @@ function migrateLocaleHook() {
   }
 }
 
-// Idempotent: if the "to" text is already present, there is nothing to do. Otherwise the "from"
-// text must occur exactly once, so an unexpected upstream change is never clobbered.
-function replaceOnce(file, from, to, appliedMarker) {
+// Idempotent per replacement: if the "to" text is already present, there is nothing to do.
+// Otherwise the "from" text must occur exactly once, so an unexpected upstream change is never
+// clobbered.
+function replaceOnce(file, from, to) {
   const p = corePath(file);
   const text = read(p);
-  if (text.includes(appliedMarker)) { return; }
+  if (text.includes(to)) { return; }
   if (text.split(from).length !== 2) {
     fail(`Unexpected contents of ${file}; refusing to modify it`);
   }
