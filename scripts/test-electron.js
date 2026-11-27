@@ -104,8 +104,10 @@ function buildEnv(mode) {
     SELENIUM_BROWSER: 'chrome',
     MOCHA_WEBDRIVER_IGNORE_CHROME_VERSION: '1',
     GRIST_LOG_LEVEL: process.env.GRIST_LOG_LEVEL || 'warn',
-    // Tells setup.js to do the extra setup the borrowed Grist suites need.
-    ...(mode === 'upstream' ? {GRIST_DESKTOP_TEST_UPSTREAM: '1'} : {}),
+    // Tells setup.js to do the extra setup the borrowed Grist suites need. They also assume the
+    // upstream English document defaults; the desktop's own tests cover the Persian defaults.
+    ...(mode === 'upstream' ?
+      {GRIST_DESKTOP_TEST_UPSTREAM: '1', GRIST_DEFAULT_LOCALE: 'en-US'} : {}),
   };
 }
 
@@ -195,6 +197,9 @@ function prepareAppEnv(port, state) {
     TEST_SUPPORT_API_KEY: 'api_key_for_support',
     GRIST_IN_SERVICE: 'true',
     LANGUAGE: 'en_US',
+    // This environment only serves the borrowed upstream suites (deployment mode), which expect
+    // the upstream English defaults; the Persian defaults are covered by the desktop tests.
+    GRIST_DEFAULT_LOCALE: 'en-US',
     GRIST_INST_DIR: path.join(state, 'inst'),
     GRIST_DATA_DIR: path.join(state, 'docs'),
     TYPEORM_DATABASE: path.join(state, 'landing.db'),
