@@ -112,7 +112,7 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --draft \
               --title "Grist Desktop فارسی $GITHUB_REF_NAME" \
-              --notes "نسخهٔ فارسی Grist Desktop با تقویم جلالی، رابط راست‌به‌چپ و فونت وزیرمتن. فایل نصب امضای دیجیتال ندارد."
+              --notes "نسخهٔ فارسی Grist Desktop با تقویم جلالی، رابط راست‌به‌چپ و فونت وزیرمتن. فایل‌های نصب امضای دیجیتال ندارند."
           gh release upload "$GITHUB_REF_NAME" dist/*.exe --clobber
 
   linux:
@@ -175,3 +175,15 @@ jobs:
           path: dist/*.AppImage
           if-no-files-found: error
           retention-days: 30
+
+      - name: Put the installer on a draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --draft \
+              --title "Grist Desktop فارسی $GITHUB_REF_NAME" \
+              --notes "نسخهٔ فارسی Grist Desktop با تقویم جلالی، رابط راست‌به‌چپ و فونت وزیرمتن. فایل‌های نصب امضای دیجیتال ندارند."
+          gh release upload "$GITHUB_REF_NAME" dist/*.AppImage --clobber
