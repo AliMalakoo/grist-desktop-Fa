@@ -10,6 +10,11 @@ env:
   FORCE_COLOR: 1
   GRIST_SKIP_EXT_AUTOSETUP: 1
 
+permissions:
+  contents: read
+  # Reporting browser-test failures as a pull-request comment.
+  pull-requests: write
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -89,7 +94,8 @@ jobs:
           yarn run test:electron:upstream 2>&1 | tee test-logs/upstream-browser-tests.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            node ./scripts/ci-test-annotations.js test-logs/upstream-browser-tests.log
+            node ./scripts/ci-test-annotations.js \
+              test-logs/upstream-browser-tests.log --markdown test-logs/upstream-failures.md
           fi
           exit "$status"
 
@@ -103,9 +109,25 @@ jobs:
           yarn run test:electron:deployment 2>&1 | tee test-logs/deployment-browser-tests.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            node ./scripts/ci-test-annotations.js test-logs/deployment-browser-tests.log
+            node ./scripts/ci-test-annotations.js \
+              test-logs/deployment-browser-tests.log --markdown test-logs/deployment-failures.md
           fi
           exit "$status"
+
+      - name: Report browser test failures on the pull request
+        if: failure() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if ! ls test-logs/*-failures.md >/dev/null 2>&1; then exit 0; fi
+          {
+            echo "### آزمون‌های مرورگری هسته شکست خوردند"
+            echo
+            cat test-logs/*-failures.md
+          } > test-logs/comment.md
+          gh pr comment "$PR_NUMBER" --body-file test-logs/comment.md
 
       - name: Save the logs from the browser tests
         if: failure()

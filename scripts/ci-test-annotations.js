@@ -5,13 +5,17 @@
 // proxy), while annotations stay available through the API. This prints one annotation per failing
 // test, with the start of its error, so a failure can be diagnosed without the full log.
 //
-//   node scripts/ci-test-annotations.js /path/to/mocha-output.log
+//   node scripts/ci-test-annotations.js /path/to/mocha-output.log [--markdown out.md]
 const fs = require('fs');
 
 const file = process.argv[2];
+const markdownAt = process.argv.indexOf('--markdown');
+const markdownFile = markdownAt >= 0 ? process.argv[markdownAt + 1] : null;
 if (!file || !fs.existsSync(file)) { process.exit(0); }
 
-const text = fs.readFileSync(file, 'utf8');
+// FORCE_COLOR=1 makes mocha colour even a piped log, and the escape sequences sit between the
+// indentation and the numbers our patterns look for.
+const text = fs.readFileSync(file, 'utf8').replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
 const escape = value => String(value)
   .replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
   .replace(/::/g, ':').replace(/,/g, ' -');
@@ -49,4 +53,15 @@ for (const failure of failures.slice(0, 15)) {
 }
 if (failures.length > 15) {
   console.log(`::warning::${failures.length - 15} more failing test(s); see the job log.`);
+}
+
+// A pull-request comment keeps the details readable even when the job log cannot be fetched.
+if (markdownFile && failures.length) {
+  const parts = [`**${summary || 'The browser tests failed.'}**`, ''];
+  for (const failure of failures.slice(0, 20)) {
+    parts.push(`- **${failure.title}**`, '', '  ```', ...
+      (failure.body || '(no error output)').split('\n').map(line => `  ${line}`), '  ```');
+  }
+  if (failures.length > 20) { parts.push(`- …and ${failures.length - 20} more.`); }
+  fs.writeFileSync(markdownFile, parts.flat().join('\n') + '\n');
 }
