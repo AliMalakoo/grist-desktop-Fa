@@ -27,8 +27,22 @@ jobs:
           assoc .sh=bashscript
           ftype bashscript="%ProgramFiles%\Git\bin\bash.exe" "%1"
       - name: Install dependencies
-        # Use the same shell and options as the existing Windows CI job.
-        run: yarn install --network-timeout 300000 --ignore-optional
+        shell: pwsh
+        env:
+          FORCE_COLOR: '0'
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'yarn-install.log'
+          cmd /c "yarn install --network-timeout 300000 --ignore-optional > `"$log`" 2>&1"
+          $status = $LASTEXITCODE
+          Get-Content $log
+          if ($status -ne 0) {
+            Write-Host "::error title=Yarn exit code::$status"
+            Get-Content $log -Tail 40 | ForEach-Object {
+              $line = $_.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Host "::error title=Yarn output::$line"
+            }
+          }
+          exit $status
       - name: Prepare Persian core and Python sandbox
         run: yarn run setup
         env:
