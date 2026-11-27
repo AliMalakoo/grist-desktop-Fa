@@ -9,7 +9,10 @@ Vazirmatn در خود برنامه قرار می‌گیرد و به اینترن
 
 ## ساخت فایل نصب ویندوز ۶۴ بیتی
 
-پس از ادغام این workflow در شاخهٔ پیش‌فرض مخزن (GitHub برای اجرای دستی چنین شرطی دارد)،
+این workflow برای هر Pull Request نیز اجرا می‌شود. در صفحهٔ Pull Request می‌توانید اجرای
+**Build Persian Windows installer** را باز کنید و پس از موفقیت، artifact را از همان اجرا بگیرید.
+
+برای اجرای دستی، پس از ادغام این workflow در شاخهٔ پیش‌فرض مخزن (شرط GitHub برای اجرای دستی)،
 از **Actions → Build Persian Windows installer →
 Run workflow** همین شاخه را انتخاب کنید. پس از موفقیت، از صفحهٔ همان اجرا artifact به نام
 `grist-desktop-fa-windows-x64` را بگیرید؛ فایل ZIP دانلودشده حاوی فایل نصب `.exe` است.

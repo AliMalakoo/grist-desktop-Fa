@@ -26,6 +26,19 @@ describe('Smoke', function () {
     assert.include(font.family, 'Vazirmatn');
   });
 
+  it('respects an explicit English language preference and returns to the Persian default', async function () {
+    await mw.driver.manage().addCookie({name: 'grist_user_locale', value: 'en', path: '/'});
+    await mw.driver.navigate().refresh();
+    await mw.driver.wait(async () => await mw.driver.executeScript(
+      () => document.documentElement.lang === 'en' && document.documentElement.dir === 'ltr'
+    ), 30_000);
+    await mw.driver.manage().deleteCookie('grist_user_locale');
+    await mw.driver.navigate().refresh();
+    await mw.driver.wait(async () => await mw.driver.executeScript(
+      () => document.documentElement.lang === 'fa' && document.documentElement.dir === 'rtl'
+    ), 30_000);
+  });
+
   it('exposes the Grist API to anonymous sessions', async function () {
     const result = await mw.driver.executeAsyncScript(async function (cb) {
       try {
