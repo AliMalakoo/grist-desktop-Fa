@@ -29,6 +29,10 @@ const fail = message => { throw new Error(message); };
 const list = name => read(path.join(layer, 'patch', name)).split(/\r?\n/).filter(Boolean);
 const corePath = file => path.join(core, file);
 const listFonts = () => fs.readdirSync(fonts).sort();
+// A Windows checkout can use CRLF while git apply writes LF (and may leave a stray CR on the
+// final line). Compare content rather than the local line-ending style, so the same layer verifies
+// on every platform.
+const canonical = text => text.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
 
 if (!fs.existsSync(path.join(layer, 'patch', 'fa-modified.patch'))) {
   fail('The vendored Persian layer is missing from localization/grist-core-fa');
@@ -121,7 +125,7 @@ function verifyTree() {
   for (const file of files) {
     const actual = corePath(file);
     if (!fs.existsSync(actual)) { console.error(`MISSING      ${file}`); problems++; continue; }
-    if (read(actual) === expectedContent(file)) { continue; }
+    if (canonical(read(actual)) === canonical(expectedContent(file))) { continue; }
     console.error(`DIFFERS      ${file}`); problems++;
   }
   const themeFile = corePath('app/common/themes/Base.ts');
