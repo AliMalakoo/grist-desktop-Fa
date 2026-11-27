@@ -22,10 +22,10 @@ jobs:
         with:
           python-version: '3.11'
       - name: Associate shell scripts with Git Bash
-        shell: cmd
+        # Use PowerShell to pass %1 literally to cmd; in a .cmd script it expands away.
         run: |
-          assoc .sh=bashscript
-          ftype bashscript="%ProgramFiles%\Git\bin\bash.exe" "%1"
+          cmd /c assoc .sh=bashscript
+          cmd /c ftype bashscript="%ProgramFiles%\Git\bin\bash.exe" "%1"
       - name: Install dependencies
         shell: pwsh
         env:
