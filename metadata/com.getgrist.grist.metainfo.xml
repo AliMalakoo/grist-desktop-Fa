@@ -66,6 +66,13 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.4.0" date="2026-11-27">
+      <description>
+        <p>Persian edition defaults to the Persian interface and to fa-IR for new documents</p>
+        <p>Persian menus and native dialogs, bundled Vazirmatn font, Jalali calendar</p>
+        <p>Keeps the upstream Grist core v1.7.22</p>
+      </description>
+    </release>
     <release version="0.3.17" date="2026-10-29">
       <description>
         <p>Fixes an empty custom widget list</p>

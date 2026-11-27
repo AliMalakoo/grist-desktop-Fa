@@ -48,6 +48,10 @@ class AppMenu extends events.EventEmitter {
           click: () => app.emit('open-file', undefined, filePath)
        });
     });
+    // An empty submenu looks like a bug in the menu; say why it is empty instead.
+    if (!subMenu.length) {
+      subMenu.push({ label: 'هنوز سندی باز نشده است', enabled: false });
+    }
     return subMenu;
   }
 
@@ -58,16 +62,16 @@ class AppMenu extends events.EventEmitter {
       menuTemplate.push({
         label: appName,
         submenu: [
-          { role: 'about' },
+          { role: 'about', label: 'دربارهٔ Grist' },
           // On Mac, the "Check for Updates" item goes into the leftmost "Grist" menu.
           ...(useUpdate ? this.buildUpdateItemsTemplate() : []),
 
           { type: 'separator' },
-          { role: 'services', },
+          { role: 'services', label: 'سرویس‌ها' },
           { type: 'separator' },
-          { role: 'hide' },
-          { role: 'hideothers' },
-          { role: 'unhide' },
+          { role: 'hide', label: 'پنهان کردن Grist' },
+          { role: 'hideothers', label: 'پنهان کردن بقیه' },
+          { role: 'unhide', label: 'نمایش همه' },
           { type: 'separator' },
           { role: 'quit', label: 'خروج' }
       ]});
@@ -76,7 +80,7 @@ class AppMenu extends events.EventEmitter {
     menuTemplate.push({
       label: 'پرونده',
       submenu: [{
-        label: 'جدید',
+        label: 'سند جدید',
         accelerator: 'CmdOrCtrl+N',
         click: (item, focusedWindow) => this.emit('menu-file-new', focusedWindow)
       }, {
@@ -84,7 +88,7 @@ class AppMenu extends events.EventEmitter {
         accelerator: 'CmdOrCtrl+O',
         click: (item, focusedWindow) => this.emit('menu-file-open', focusedWindow)
       }, {
-        label: 'پرونده‌های اخیر',
+        label: 'اسناد اخیر',
         submenu: this.buildOpenRecentSubmenu()
       }, {
         role: 'close', label: 'بستن پنجره'
@@ -131,7 +135,7 @@ class AppMenu extends events.EventEmitter {
       }]
       .concat(isMac ? [
         { type: 'separator' },
-        { role: 'front' }
+        { role: 'front', label: 'آوردن همه به جلو' }
       ] : [])
     }, {
       label: 'راهنما',
