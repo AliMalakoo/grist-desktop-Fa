@@ -12,11 +12,6 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
-      - name: Preserve Unix paths and symlinks in the checkout
-        shell: bash
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.symlinks true
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -32,21 +27,8 @@ jobs:
           assoc .sh=bashscript
           ftype bashscript="%ProgramFiles%\Git\bin\bash.exe" "%1"
       - name: Install dependencies
-        shell: bash
-        run: |
-          set +e
-          yarn install --network-timeout 300000 --ignore-optional 2>&1 | tee "$RUNNER_TEMP/yarn-install.log"
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            # Surface the end of the log in the job annotations as well as the full log.
-            # GitHub's full log download may be inaccessible in restricted environments.
-            tail -n 30 "$RUNNER_TEMP/yarn-install.log" | while IFS= read -r line; do
-              line=${line//'%'/'%25'}
-              line=${line//$'\r'/'%0D'}
-              echo "::error title=Dependency installation failed::$line"
-            done
-          fi
-          exit "$status"
+        # Use the same shell and options as the existing Windows CI job.
+        run: yarn install --network-timeout 300000 --ignore-optional
       - name: Prepare Persian core and Python sandbox
         run: yarn run setup
         env:
