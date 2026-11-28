@@ -1332,7 +1332,9 @@ export default class GridView extends BaseView {
    *        |0____|1____|..5|6____| *       Returns 6
    **/
   // Convert a mouse event's pageX into "flow" coordinates: a distance from the flow-start edge
-  // of the scroll pane (the left edge in LTR, the right edge in RTL).
+  // of the scroll pane (the left edge in LTR, the right edge in RTL). Used for the drag indicators,
+  // which are positioned inside the pane. Column hit-testing (getMousePosCol) keeps using page
+  // coordinates, since it measures from the corner element's own rect.
   protected _mouseFlowX(event: MouseEvent): number {
     const rect = this.scrollPane.getBoundingClientRect();
     return isRtl() ? rect.right - event.pageX : event.pageX - rect.left;
@@ -2011,7 +2013,9 @@ export default class GridView extends BaseView {
   protected colMouseMove(event: MouseEvent) {
     if (this.gristDoc.docModel.editingFormula.peek()) { return; }
 
-    const currentCol = Math.min(this.getMousePosCol(this._mouseFlowX(event)),
+    // getMousePosCol works in page coordinates (it measures from the corner element's rect),
+    // so the mouse position reaches it unconverted.
+    const currentCol = Math.min(this.getMousePosCol(event.pageX),
       this.viewSection.viewFields().peekLength - 1);
     this.cellSelector.col.end(currentCol);
   }
@@ -2163,7 +2167,7 @@ export default class GridView extends BaseView {
   }
 
   protected dragCols(event: MouseEvent) {
-    let dropIndex = Math.min(this.getMousePosCol(this._mouseFlowX(event)),
+    let dropIndex = Math.min(this.getMousePosCol(event.pageX),
       this.viewSection.viewFields().peekLength - 1);
     if (this.cellSelector.containsCol(dropIndex)) {
       dropIndex = this.cellSelector.colLower();
