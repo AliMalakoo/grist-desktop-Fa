@@ -17,8 +17,8 @@ describe('Smoke', function () {
     )), 30_000);
     const font = await mw.driver.executeAsyncScript(async function (cb) {
       try {
-        await document.fonts.load('16px \"Vazirmatn Variable\"', 'سلام');
-        cb({available: document.fonts.check('16px \"Vazirmatn Variable\"', 'سلام'),
+        await document.fonts.load('16px \"Vazirmatn\"', 'سلام');
+        cb({available: document.fonts.check('16px \"Vazirmatn\"', 'سلام'),
           family: getComputedStyle(document.body).fontFamily});
       } catch (e) { cb({error: String(e)}); }
     });

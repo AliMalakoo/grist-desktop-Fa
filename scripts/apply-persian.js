@@ -16,23 +16,22 @@ const root = path.resolve(__dirname, '..');
 const core = path.join(root, 'core');
 const layer = path.join(root, 'localization', 'grist-core-fa');
 const stateFile = path.join(core, '.grist-desktop-fa-state.json');
-const fonts = path.join(root, 'localization', 'fonts');
-const fontDest = path.join(core, 'static', 'vazirmatn');
 const checkOnly = process.argv.includes('--check');
 // Bumped when the desktop-side hooks below change. A prepared tree with an older value gets the
 // (idempotent) hooks applied again instead of requiring a fresh checkout.
-const DESKTOP_HOOKS = 3;
+const DESKTOP_HOOKS = 4;
 
 const read = p => fs.readFileSync(p, 'utf8');
 const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 const fail = message => { throw new Error(message); };
 const list = name => read(path.join(layer, 'patch', name)).split(/\r?\n/).filter(Boolean);
 const corePath = file => path.join(core, file);
-const listFonts = () => fs.readdirSync(fonts).sort();
 // A Windows checkout can use CRLF while git apply writes LF (and may leave a stray CR on the
 // final line). Compare content rather than the local line-ending style, so the same layer verifies
 // on every platform.
 const canonical = text => text.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+// The layer ships web fonts next to source files; compare those byte for byte.
+const isText = file => !/\.(woff2?|ttf|otf|eot|png|jpe?g|gif|ico|pdf)$/i.test(file);
 
 if (!fs.existsSync(path.join(layer, 'patch', 'fa-modified.patch'))) {
   fail('The vendored Persian layer is missing from localization/grist-core-fa');
@@ -64,10 +63,9 @@ for (const file of files) {
 // Inputs of the layer itself. The scripts and desktop hooks are deliberately not part of this
 // hash: they may be improved without forcing users to throw away a correctly prepared core.
 const layerInputs = [path.join(layer, 'REVISION'), path.join(layer, 'UPSTREAM.lock'),
-  path.join(layer, 'patch', 'fa-modified.patch'),
+  path.join(layer, 'LICENSE.txt'), path.join(layer, 'patch', 'fa-modified.patch'),
   ...['files.txt', 'added-files.txt', 'modified-files.txt'].map(f => path.join(layer, 'patch', f)),
-  ...files.map(f => path.join(layer, 'overlay', f)),
-  ...listFonts().map(f => path.join(fonts, f))];
+  ...files.map(f => path.join(layer, 'overlay', f))];
 const inputHash = crypto.createHash('sha256').update(layerInputs.map(hash).join(':')).digest('hex');
 
 // The localization hook: default the interface to Persian in the desktop app, while an explicit
@@ -76,7 +74,7 @@ const inputHash = crypto.createHash('sha256').update(layerInputs.map(hash).join(
 // wider meaning in core would enable untested Electron-only code paths.
 const LOCALE_FROM = '    window.navigator.language ||';
 const LOCALE_TO = '    (window as any).gristDesktopDefaultLocale || window.navigator.language ||';
-// The hook used by the first Persian build; replaced in place when upgrading an existing tree.
+// The hook used by the first Persian builds; replaced in place when upgrading an existing tree.
 const OLD_LOCALE_TO = '    (window.isRunningUnderElectron ? "fa" : window.navigator.language) ||';
 
 // What a file in the core tree must contain after a successful preparation.
@@ -91,14 +89,15 @@ function expectedContent(file) {
   return text;
 }
 
+// Vazirmatn is bundled and served by the layer itself (static/fonts/vazirmatn, with its
+// @font-face rules in the bundled Rtl.css), so the desktop only has to put it at the front of the
+// two theme font stacks. There are two stacks (interface and data), handled separately.
+const FONT_FAMILY = 'Vazirmatn';
 const themeReplacements = [
-  ['fontFamily: `-apple-system', 'fontFamily: `"Vazirmatn Variable",-apple-system'],
+  ['fontFamily: `-apple-system', `fontFamily: \`"${FONT_FAMILY}",-apple-system`],
   ['`Liberation Sans,Helvetica,Arial,sans-serif',
-    '`"Vazirmatn Variable",Liberation Sans,Helvetica,Arial,sans-serif'],
+    `\`"${FONT_FAMILY}",Liberation Sans,Helvetica,Arial,sans-serif`],
 ];
-const appHtmlFrom = '<link rel="stylesheet" href="bundle.css">';
-const appHtmlTo = '<link rel="stylesheet" href="vazirmatn/vazirmatn.css">\n' +
-  '<link rel="stylesheet" href="bundle.css">';
 
 function currentState() {
   if (!fs.existsSync(stateFile)) { return null; }
@@ -120,30 +119,26 @@ function stateProblems(state) {
   return problems;
 }
 
+function sameContent(file) {
+  const actual = corePath(file);
+  if (!isText(file)) { return hash(actual) === hash(path.join(layer, 'overlay', file)); }
+  return canonical(read(actual)) === canonical(expectedContent(file));
+}
+
 function verifyTree() {
   let problems = 0;
   for (const file of files) {
     const actual = corePath(file);
     if (!fs.existsSync(actual)) { console.error(`MISSING      ${file}`); problems++; continue; }
-    if (canonical(read(actual)) === canonical(expectedContent(file))) { continue; }
-    console.error(`DIFFERS      ${file}`); problems++;
+    if (sameContent(file)) { continue; }
+    console.error(`DIFFERS      ${file}`);
+    problems++;
   }
   const themeFile = corePath('app/common/themes/Base.ts');
   const theme = fs.existsSync(themeFile) ? read(themeFile) : '';
   for (const [, to] of themeReplacements) {
     if (!theme.includes(to)) {
       console.error(`MISSING      ${to.slice(0, 40)}... in app/common/themes/Base.ts`); problems++;
-    }
-  }
-  const htmlFile = corePath('static/app.html');
-  const html = fs.existsSync(htmlFile) ? read(htmlFile) : '';
-  if (!html.includes('vazirmatn/vazirmatn.css')) {
-    console.error('MISSING      Vazirmatn stylesheet in static/app.html'); problems++;
-  }
-  for (const font of listFonts()) {
-    const dest = path.join(fontDest, font);
-    if (!fs.existsSync(dest) || hash(dest) !== hash(path.join(fonts, font))) {
-      console.error(`MISSING      static/vazirmatn/${font}`); problems++;
     }
   }
   return problems;
@@ -155,8 +150,8 @@ if (checkOnly) {
   if (problems.length) { fail(`The prepared core is not valid:\n  - ${problems.join('\n  - ')}`); }
   const mismatches = verifyTree();
   if (mismatches) { fail(`${mismatches} file(s) do not match the Persian layer`); }
-  console.log(`Persian layer verified: ${files.length} core files, ${listFonts().length} font files,` +
-    ` layer ${overlayRevision.slice(0, 7)}, core ${base.slice(0, 7)}.`);
+  console.log(`Persian layer verified: ${files.length} files, layer ${overlayRevision.slice(0, 7)},` +
+    ` core ${base.slice(0, 7)}.`);
   process.exit(0);
 }
 
@@ -185,7 +180,7 @@ if (state) {
 
 // Fresh preparation. Refuse to touch a tree that carries the user's own edits, rather than letting
 // git apply produce a confusing conflict or, worse, a half-applied layer.
-const tracked = [...files, 'app/common/themes/Base.ts', 'static/app.html'];
+const tracked = [...files, 'app/common/themes/Base.ts'];
 const dirty = execFileSync('git',
   ['status', '--porcelain', '--untracked-files=no', '--', ...tracked],
   {cwd: core, encoding: 'utf8'}).trim();
@@ -196,7 +191,6 @@ if (dirty) {
 for (const file of added) {
   if (fs.existsSync(corePath(file))) { fail(`${file} already exists; refusing to overwrite it`); }
 }
-if (fs.existsSync(fontDest)) { fail('static/vazirmatn already exists; refusing to overwrite it'); }
 
 // Check the desktop-specific hooks before applying anything, to avoid a half-prepared tree.
 const themeFile = corePath('app/common/themes/Base.ts');
@@ -205,10 +199,6 @@ for (const [from] of themeReplacements) {
   if (theme.split(from).length !== 2) {
     fail('Unexpected contents of app/common/themes/Base.ts; refusing to modify it');
   }
-}
-const htmlFile = corePath('static/app.html');
-if (read(htmlFile).split(appHtmlFrom).length !== 2) {
-  fail('Unexpected contents of static/app.html; refusing to modify it');
 }
 
 const patch = path.join(layer, 'patch', 'fa-modified.patch');
@@ -221,10 +211,6 @@ for (const file of added) {
 }
 
 applyDesktopHooks();
-fs.mkdirSync(fontDest, {recursive: true});
-for (const file of listFonts()) {
-  fs.copyFileSync(path.join(fonts, file), path.join(fontDest, file));
-}
 
 const mismatches = verifyTree();
 if (mismatches) { fail(`${mismatches} file(s) do not match the Persian layer after applying it`); }
@@ -239,23 +225,21 @@ writeState({
   inputHash,
   files: snapshotFiles(),
 });
-console.log(`Persian layer prepared: ${files.length} core files, ${listFonts().length} font files,` +
-  ` layer ${overlayRevision.slice(0, 7)}, core ${base.slice(0, 7)}.`);
+console.log(`Persian layer prepared: ${files.length} files, layer ${overlayRevision.slice(0, 7)},` +
+  ` core ${base.slice(0, 7)}.`);
 
 function applyDesktopHooks() {
   // The default language inside the desktop. The layer's detectCurrentLang() checks this before
-  // the browser/OS language, but after an explicit account locale or cookie.
+  // the browser/OS language, but after an explicit account locale or cookie. The layer itself
+  // already ships Vazirmatn and its @font-face rules; the desktop only extends the theme stacks.
   migrateLocaleHook();
   replaceOnce('app/client/lib/localization.ts', LOCALE_FROM, LOCALE_TO);
-  // Vazirmatn is bundled with the app, so Persian text needs no network access. There are two
-  // stacks (the interface font and the data font), and each must be handled on its own.
   for (const [from, to] of themeReplacements) {
     replaceOnce('app/common/themes/Base.ts', from, to);
   }
-  replaceOnce('static/app.html', appHtmlFrom, appHtmlTo);
 }
 
-// Upgrade the hook written by the first Persian build, without needing a clean checkout.
+// Upgrade the hook written by older Persian builds, without needing a clean checkout.
 function migrateLocaleHook() {
   const p = corePath('app/client/lib/localization.ts');
   const text = read(p);
@@ -278,10 +262,8 @@ function replaceOnce(file, from, to) {
 }
 
 function snapshotFiles() {
-  return Object.fromEntries([...files,
-    'app/common/themes/Base.ts', 'static/app.html',
-    ...listFonts().map(f => `static/vazirmatn/${f}`),
-  ].map(file => [file, hash(corePath(file))]));
+  return Object.fromEntries([...files, 'app/common/themes/Base.ts']
+    .map(file => [file, hash(corePath(file))]));
 }
 
 function writeState(next) {

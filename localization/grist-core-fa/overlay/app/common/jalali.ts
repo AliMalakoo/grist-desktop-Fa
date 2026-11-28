@@ -440,17 +440,22 @@ const FORMAT_TOKEN_RE = new RegExp([
  * Everything before that point is ours to format; everything from it on is handed to moment
  * unchanged, so time zones, am/pm and custom time formats keep working as before.
  */
-export function splitDateFormat(format: string): {date: string, time: string} {
+export function splitDateFormat(format: string): {date: string, time: string, joiner: string} {
   const re = new RegExp(FORMAT_TOKEN_RE.source, "g");
   let match: RegExpExecArray | null;
   while ((match = re.exec(format)) !== null) {
     if (TIME_TOKENS.has(match[0])) {
       // Trim the joiner: "YYYY/MM/DD HH:mm" is a date format plus a time format, not a date
-      // format with a trailing space (which a widget would then render as one).
-      return {date: format.slice(0, match.index).trim(), time: format.slice(match.index).trim()};
+      // format with a trailing space (which a widget would then render as one). The joiner itself
+      // is still reported, for formatJalaliMoment to put back: without it the two halves render
+      // squished together.
+      const date = format.slice(0, match.index);
+      const dateTrimmed = date.trim();
+      return {date: dateTrimmed, time: format.slice(match.index).trim(),
+              joiner: date.slice(dateTrimmed.length)};
     }
   }
-  return {date: format, time: ""};
+  return {date: format, time: "", joiner: ""};
 }
 
 function pad2(n: number): string { return n < 10 ? `0${n}` : String(n); }
@@ -520,11 +525,11 @@ export function formatJalaliMoment(
     return null;
   }
   if (!isConvertibleJalaliYear(j.jy)) { return null; }
-  const {date, time} = splitDateFormat(format);
+  const {date, time, joiner} = splitDateFormat(format);
   const weekday = positiveMod(jalaliWeekdayIndex(j.jy, j.jm, j.jd) + (opts.weekdayOffset || 0), 7);
   const datePart = formatJalaliDatePart(j, weekday, date, opts);
   const timePart = time ? m.format(time) : "";
-  const joined = datePart + timePart;
+  const joined = datePart + (time ? joiner : "") + timePart;
   return (opts.digits ?? "persian") === "persian" ? toPersianDigits(withPersianDayPeriod(joined)) : joined;
 }
 

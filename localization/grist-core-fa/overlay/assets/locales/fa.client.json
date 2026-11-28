@@ -907,7 +907,8 @@
     "row numbers": "شماره ردیف‌ها"
   },
   "GridView": {
-    "ID": "شناسه"
+    "ID": "شناسه",
+    "View record as card": "مشاهدهٔ رکورد به صورت کارت"
   },
   "GridViewMenus": {
     "Add column": "افزودن ستون",

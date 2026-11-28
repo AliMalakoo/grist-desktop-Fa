@@ -17,6 +17,40 @@ export type Perspective = "day" | "week" | "month";
 export const PERSPECTIVES: Perspective[] = ["day", "week", "month"];
 
 /**
+ * The surface CalendarView and CalendarRenderer talk to. Two engines implement it: CalendarWrapper
+ * (ToastUI, Gregorian) and JalaliCalendar (a custom right-to-left engine, used when the document
+ * or the interface language is Jalali). Anything that drives a calendar should type it against
+ * this, not against an engine.
+ */
+export interface CalendarWidget extends Disposable {
+  // Wraps a date in the engine's date class (TZDate for both engines).
+  tzDate(date: CalendarDate): TZDate;
+  getViewName(): string;
+  // True when the caller should limit how many events it draws per day.
+  capsEventsPerDay(): boolean;
+  // The date the grid is anchored on.
+  getDate(): TZDate;
+  setDate(date: Date | TZDate): void;
+  // The range the grid currently shows, both ends included, in milliseconds.
+  getVisibleRange(): { fromMs: number; toMs: number };
+  render(): void;
+  setTheme(): void;
+  setReadOnly(isReadOnly: boolean): void;
+  updateTitle(): void;
+  changeView(view: Perspective): void;
+  go(method: "prev" | "next" | "today"): void;
+  updateUIAfterNavigation(): void;
+  setAllDayOnly(allDayOnly: boolean): void;
+  createEvents(events: EventObject[]): void;
+  updateEvent(rowId: number, event: EventObject): void;
+  deleteEvent(rowId: number): void;
+  clearEvents(): void;
+  getEvent(rowId: number): EventObject | null | undefined;
+  setSelected(rowId: number | null): void;
+  setHiddenCounts(hiddenPerDay: Map<string, number>): void;
+}
+
+/**
  * What CalendarWrapper asks Grist to do. The calendar knows only row ids and dates. Everything that
  * needs a document (is this editable, where is the cursor, write this row) goes through here.
  * CalendarView implements it.
@@ -49,7 +83,7 @@ export interface CalendarHost extends Disposable {
  * Dropped from the old widget: TUI's form and detail popups with their key handling, the i18next
  * translation code, and a `mouseup` fix for stuck drags that relied on TUI v1 internals.
  */
-export class CalendarWrapper extends Disposable {
+export class CalendarWrapper extends Disposable implements CalendarWidget {
   /**
    * Loads the TUI module (imports.js keeps one copy) and builds the calendar inside `container`.
    * Returns null if the host was disposed while the module was still loading. Named `load` rather
@@ -93,9 +127,12 @@ export class CalendarWrapper extends Disposable {
   ) {
     super();
     const startDayOfWeek = weekStartToIndex(this._weekStart);
+    // Weekday names for the grid header, in the interface language. TUI otherwise draws
+    // English "Sun..Sat" with Latin digits, even when the title above them is in Persian.
+    const dayNames = getWeekdayNames();
     this._calendar = new Ctor(this._container, {
-      week: { taskView: false, startDayOfWeek },
-      month: { startDayOfWeek },
+      week: { taskView: false, startDayOfWeek, dayNames },
+      month: { startDayOfWeek, dayNames },
       usageStatistics: false,   // never phone home to Google Analytics
       defaultView: perspective,
       isReadOnly: this._host.isReadOnly(),
@@ -106,7 +143,7 @@ export class CalendarWrapper extends Disposable {
       // selectDateTime directly (no popup): we add the Grist row for the dragged range and open
       // Grist's Record Card on it. Double-click an existing event also opens the Record Card.
       gridSelection: { enableDblClick: true, enableClick: false },
-      template: this._timeTemplates(),
+      template: this._gridTemplates(),
       calendars: [{
         id: CALENDAR_NAME,
         // Never shown: we use a single calendar, and TUI's popups (which would display this) are
@@ -423,10 +460,34 @@ export class CalendarWrapper extends Disposable {
   // now-indicator default to different styles ("03 pm" vs "15:44"); format both with one helper so
   // they agree. The drag-selection label can't be templated, so it's hidden via CSS and redrawn as
   // an overlay in _syncSelectionOverlay to match.
-  private _timeTemplates(): NonNullable<Options["template"]> {
+  // Hour labels and the day/weekday/month-cell bits of the grid, in the interface language.
+  // TUI's defaults hard-code English weekday names and Latin digits, which shows through in a
+  // Persian calendar next to the Persian title; the classes of the default templates are kept,
+  // so existing CSS and the <<more>> count painting in _paintHiddenCounts keep working.
+  private _gridTemplates(): NonNullable<Options["template"]> {
     return {
       timegridDisplayPrimaryTime: ({ time }) => formatHourMinute(time, this._timeFormat),
       timegridNowIndicatorLabel: ({ time }) => formatHourMinute(time, this._timeFormat),
+      weekDayName: (model) =>
+        `<p><span class="day-name__date">${localizedNumber(model.date)}</span>\u00A0\u00A0` +
+        `<span class="day-name__name">${model.dayName}</span></p>`,
+      monthGridHeader: (model) => {
+        // model.date is "YYYY-MM-DD".
+        const day = parseInt(model.date.split("-")[2], 10);
+        const decorator = model.isToday ? " weekday-grid-date-decorator" : "";
+        return `<span class="weekday-grid-date${decorator}">${localizedNumber(day)}</span>`;
+      },
+      monthMoreTitleDate: (moreTitle) => {
+        const dayIndex = moreTitle.day;
+        const date = typeof moreTitle.date === "number" ?
+          moreTitle.date : parseInt(String(moreTitle.date), 10);
+        const dayName = weekdayNameShort(dayIndex);
+        // Keep the zero padding of TUI's default, in the locale's own zero.
+        const zero = localizedNumber(0);
+        const dateText = localizedNumber(date).padStart(2, zero);
+        return `<p><span class="more-title-date">${dateText}</span>` +
+          `<span class="more-title-day">${dayName}</span></p>`;
+      },
     };
   }
 
@@ -637,6 +698,37 @@ function formatSelectionLabel(text: string, format: TimeFormat): string | null {
   const single = /^(\d{1,2}):(\d{2})$/.exec(text);
   if (single) { return at(single[1], single[2]); }
   return null;
+}
+
+// The short weekday names in the interface language, indexed the way TUI expects them
+// (0=Sunday..6=Saturday). 2023-10-01 was a Sunday. "short" is full-width in Persian, which is
+// what the title uses too.
+function weekdayNameShort(dayIndex: number): string {
+  return weekdayNamesShort()[dayIndex];
+}
+
+const weekdayNamesCache = new Map<string, [string, string, string, string, string, string, string]>();
+
+function weekdayNamesShort(): [string, string, string, string, string, string, string] {
+  const locale = getTitleLocale();
+  let cached = weekdayNamesCache.get(locale);
+  if (!cached) {
+    const fmt = new Intl.DateTimeFormat(locale, { weekday: "short", timeZone: "UTC" });
+    cached = [...Array(7)].map((_, i) =>
+      fmt.format(new Date(Date.UTC(2023, 9, 1 + i)))) as
+      [string, string, string, string, string, string, string];
+    weekdayNamesCache.set(locale, cached);
+  }
+  return cached;
+}
+
+function getWeekdayNames(): [string, string, string, string, string, string, string] {
+  return weekdayNamesShort();
+}
+
+// A number in the interface language, so Persian digits are used where the reader sees Persian.
+function localizedNumber(num: number): string {
+  return new Intl.NumberFormat(getTitleLocale(), { useGrouping: false }).format(num);
 }
 
 // TUI's startDayOfWeek index: 0=Sun..6=Sat.

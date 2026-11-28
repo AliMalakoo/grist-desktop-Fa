@@ -1,4 +1,44 @@
 /*
+ * Vazirmatn, served from this installation (static/fonts/vazirmatn/, OFL-1.1; see LICENSE there).
+ * Two subsets are shipped: arabic (covers Persian, its digits and the ZWNJ) and latin. Grist is
+ * served to browsers that will not otherwise have this font, so without these faces the Persian
+ * interface falls back to Tahoma/Segoe even though "Vazirmatn" is first in the stack below.
+ * Paths are relative to static/bundle.css, which is where this file ends up.
+ */
+@font-face {
+  font-family: "Vazirmatn";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/vazirmatn/vazirmatn-arabic-400-normal.woff2") format("woff2");
+  unicode-range: U+0600-06FF,U+0750-077F,U+0870-088E,U+0890-0891,U+0897-08E1,U+08E3-08FF,U+200C-200E,U+2010-2011,U+204F,U+2E41,U+FB50-FDFF,U+FE70-FE74,U+FE76-FEFC,U+102E0-102FB,U+10E60-10E7E,U+10EC2-10EC4,U+10EFC-10EFF,U+1EE00-1EE03,U+1EE05-1EE1F,U+1EE21-1EE22,U+1EE24,U+1EE27,U+1EE29-1EE32;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/vazirmatn/vazirmatn-arabic-700-normal.woff2") format("woff2");
+  unicode-range: U+0600-06FF,U+0750-077F,U+0870-088E,U+0890-0891,U+0897-08E1,U+08E3-08FF,U+200C-200E,U+2010-2011,U+204F,U+2E41,U+FB50-FDFF,U+FE70-FE74,U+FE76-FEFC,U+102E0-102FB,U+10E60-10E7E,U+10EC2-10EC4,U+10EFC-10EFF,U+1EE00-1EE03,U+1EE05-1EE1F,U+1EE21-1EE22,U+1EE24,U+1EE27,U+1EE29-1EE32;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/vazirmatn/vazirmatn-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/vazirmatn/vazirmatn-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/*
  * Right-to-left interface: Persian (fa), Arabic (ar), Urdu (ur), Hebrew (he), Pashto (ps), ...
  *
  * Everything here is gated on <html dir="rtl">, which the server sets when it renders the page
@@ -8,9 +48,10 @@
  *
  * Most of the mirroring needs no CSS at all: Grist's chrome is built from flexbox and inline
  * text, and `direction: rtl` reverses both. What this file does is (1) undo the few places that
- * assume left-is-first physically, (2) keep the data grid's geometry intact -- GridView measures
- * and scrolls its columns by hand -- and (3) give Persian and Arabic readers the fonts, cell
- * direction and digit rendering they expect.
+ * assume left-is-first physically, (2) lay out the data grid flow-from-right the way the JS side
+ * is built for (GridView normalizes scrollLeft and measures everything as a distance from the
+ * flow-start edge) and (3) give Persian and Arabic readers the fonts, cell direction and digit
+ * rendering they expect.
  */
 
 /* ------------------------------------------------------------------------- *
@@ -53,26 +94,19 @@ html[dir="rtl"] .jjp-toggle-label {
 }
 
 /* ------------------------------------------------------------------------- *
- * 2. The data grid: content mirrors, geometry does not
+ * 2. The data grid: flow-from-right
  * ------------------------------------------------------------------------- */
 
 /*
- * GridView positions columns and rows from measured offsets and drives the pane with scrollLeft,
- * so a mirrored scroll pane would place every column wrong. Keep the frames left-to-right; the
- * cells inside them read right-to-left.
+ * GridView lays the grid out from the flow-start edge: with html[dir="rtl"] the scroll pane and
+ * its flex rows run right-to-left, so column A is the first column from the right and the
+ * row-number gutter sticks to the right edge. The JS side normalizes scrollLeft (browsers report
+ * it as a negative number for RTL overflow) and measures positions as distances from the
+ * flow-start edge, so pixels still add up. The overlays that live outside the scroll pane are
+ * pinned to the physical right by the rules below.
  */
-html[dir="rtl"] .grid_view_data,
-html[dir="rtl"] .gridview_data_scroll,
-html[dir="rtl"] .gridview_data_header,
-html[dir="rtl"] .column_names,
-html[dir="rtl"] .gridview_row,
-html[dir="rtl"] .gridview_data_row_num,
-html[dir="rtl"] .gridview_left_border,
-html[dir="rtl"] .frozen_line,
-html[dir="rtl"] .scroll_shadow_left,
-html[dir="rtl"] .scroll_shadow_frozen {
-  direction: ltr;
-  unicode-bidi: isolate;
+html[dir="rtl"] .grid_view_data.gridview_data_scroll {
+  direction: rtl;
 }
 
 /*
@@ -112,9 +146,161 @@ html[dir="rtl"] .g-column-main-menu {
   left: auto;
 }
 
-/* Row numbers and the row menu: .gridview_data_row_num stays LTR above, so its children do. */
+/* The row-number gutter sticks to the right edge, like frozen columns do. */
+html[dir="rtl"] .gridview_data_row_num {
+  right: 0px;
+  left: auto;
+}
+
+/* Frozen columns stack from the right edge. The calc is the same as in GridView.css, which
+ * measures --frozen-position from the flow start (the right edge here). */
+html[dir="rtl"] .record .field.frozen {
+  left: auto;
+  right: calc(var(--row-num-width) + var(--row-num-border) + (var(--frozen-position, 0) - var(--frozen-offset, 0)) * 1px);
+}
+html[dir="rtl"] .field.frozen + .field:not(.frozen) {
+  margin-right: 1px;
+  margin-left: 0;
+}
+
+/* The overlays pinned to the flow-start edge move to the physical right, and the shadows flip
+ * their direction. */
+html[dir="rtl"] .gridview_data_corner_overlay {
+  right: 0;
+  left: auto;
+}
+html[dir="rtl"] .gridview_header_backdrop_left {
+  right: 0;
+  left: auto;
+  border-right: none;
+  border-left: var(--row-num-border) solid var(--grist-theme-table-header-border, lightgray);
+}
+html[dir="rtl"] .gridview_left_border {
+  right: var(--row-num-width);
+  left: auto;
+  border-right: none !important;
+  border-left: var(--row-num-border) solid var(--grist-theme-table-body-border, var(--grist-color-dark-grey)) !important;
+}
+html[dir="rtl"] .frozen_line {
+  right: calc(var(--row-num-width) + var(--frozen-width, 0) * 1px);
+  left: auto;
+}
+html[dir="rtl"] .scroll_shadow_left {
+  right: calc(var(--row-num-width) + (var(--frozen-width, 0) - min(var(--frozen-scroll-offset, 0), var(--frozen-offset, 0))) * 1px);
+  left: auto;
+  box-shadow: 6px 0 6px 6px var(--grist-theme-table-scroll-shadow, #444);
+  -webkit-clip-path: polygon(100% 0, calc(100% - 10px) 0, calc(100% - 10px) 100%, 100% 100%);
+  clip-path: polygon(100% 0, calc(100% - 10px) 0, calc(100% - 10px) 100%, 100% 100%);
+}
+html[dir="rtl"] .scroll_shadow_frozen {
+  right: var(--row-num-width);
+  left: auto;
+  box-shadow: 8px 0 14px 4px var(--grist-theme-table-scroll-shadow, #444);
+  -webkit-clip-path: polygon(100% 0, calc(100% - 10px) 0, calc(100% - 10px) 100%, 100% 100%);
+  clip-path: polygon(100% 0, calc(100% - 10px) 0, calc(100% - 10px) 100%, 100% 100%);
+}
+
+/* Row-number and corner menu toggles belong on the inner (column-facing) edge. */
+html[dir="rtl"] .gridview_data_row_num .menu_toggle {
+  left: 0px;
+  right: auto;
+}
+
+/* The per-row record-card button pins to the flow-start edge of the gutter (right in RTL),
+   mirroring the physical left: 2px in GridView.css. */
+html[dir="rtl"] .record_card_toggle {
+  left: auto;
+  right: 2px;
+}
+html[dir="rtl"] .gridview_data_corner_overlay .menu_toggle {
+  left: auto;
+  right: max(4px, calc(var(--row-num-width) - 18px));
+}
+
+/* The invalid-data badge hangs over the first column, like in LTR but on the mirrored side. */
+html[dir="rtl"] .validation_error_number {
+  right: auto;
+  left: -12px;
+}
+
+/* The row's border against the gutter: the gutter moved to the right. */
+html[dir="rtl"] .gridview_data_pane .record {
+  border-left-width: 0;
+  border-right-width: var(--row-num-border);
+}
+html[dir="rtl"] .record {
+  border-left-style: none;
+  border-right-style: solid;
+  border-right-color: var(--grist-theme-table-header-border, lightgray);
+}
+html[dir="rtl"] .column_names.record {
+  border-left-color: inherit;
+  border-right-color: var(--grist-theme-table-header-border, lightgray);
+}
+
+/* The "click to insert column" line sits on the flow-start edge of the column. */
+html[dir="rtl"] .field.field-insert-before::before {
+  left: auto;
+  right: 0;
+}
+
+/* Row numbers and the row menu: the gutter itself is sticky to the right edge; its contents
+ * read right-to-left like everything else. */
 html[dir="rtl"] .gridview_data_row_info {
   direction: rtl;
+}
+
+/* The markdown overflow fade mirrors the ellipsis it sits under (which is already moved to the
+ * left edge in section 5): the text fades out towards the reading end. */
+html[dir="rtl"] .field_clip.markdown.overflowing::before {
+  -webkit-mask-image: linear-gradient(to left, transparent calc(100% - 40px), rgb(0, 0, 0) 100%);
+  mask-image: linear-gradient(to left, transparent calc(100% - 40px), rgb(0, 0, 0) 100%);
+}
+
+/* The invalid-data badge hangs over the first column: its padding pushes the digit off the
+ * edge the badge overhangs, so the padding has to flip side with it. */
+html[dir="rtl"] .validation_error_number {
+  padding-right: 0;
+  padding-left: 10px;
+}
+
+/* The "+" add-column header cell ends the table on the flow-end edge, so its separating border
+ * and padding move to the outside edge with it. */
+html[dir="rtl"] .column_name.mod-add-column {
+  border-right-width: 0;
+  border-left-width: 1px;
+  padding-right: 0;
+  padding-left: 12px;
+}
+
+/* The info icon follows the header label in reading direction. */
+html[dir="rtl"] .g-column-label .info_toggle_icon {
+  margin-right: 0;
+  margin-left: 4px;
+}
+
+/* Linked-destination arrow: pinned to the reading edge and pointing into the cell. */
+html[dir="rtl"] .gridview_data_row_info.linked_dst::before {
+  content: "\25C2";
+  text-align: right;
+  left: auto;
+  right: 7px;
+}
+
+/* Print: the repeating table header and the leading border belong on the reading edge. */
+@media print {
+  html[dir="rtl"] .print-widget .gridview_stick-top {
+    border-left: none;
+    border-right: 1px solid var(--grist-color-dark-grey);
+  }
+  html[dir="rtl"] .print-widget .gridview_data_header {
+    padding-left: 0 !important;
+    padding-right: var(--row-num-width) !important;
+  }
+  html[dir="rtl"] .print-widget .gridview_data_pane .print-all-rows {
+    border-left: none;
+    border-right: 1px solid var(--grist-color-dark-grey);
+  }
 }
 
 /* ------------------------------------------------------------------------- *
@@ -279,9 +465,11 @@ html[dir="rtl"] .field_clip.markdown.overflowing::after {
 
 /*
  * Menus, popovers and tooltips. Their own classes are generated at build time (grainjs `styled`),
- * so there is nothing stable to select on beyond the plain element names Grist keeps on the
- * containers -- which is exactly what we need: text direction, not layout. Popper positions them
- * and follows `dir` on its own.
+ * so there is nothing stable to select on beyond the plain classes Grist keeps on the containers
+ * (grist-floating-menu) and the attribute popper v1 stamps on the positioned element (x-placement)
+ * -- which is exactly what we need: text direction, not layout. The popper anchor itself is
+ * mirrored in code (see app/client/lib/rtlPlacement.ts); menus opened from an RTL trigger drop
+ * from its reading edge.
  */
 html[dir="rtl"] .menu-list,
 html[dir="rtl"] .menu-header,
@@ -290,11 +478,13 @@ html[dir="rtl"] .popup-backdrop,
 html[dir="rtl"] .g-table-header,
 html[dir="rtl"] .g-tooltip,
 html[dir="rtl"] .grain-popmenu,
-html[dir="rtl"] [data-popper-placement] {
+html[dir="rtl"] .grist-floating-menu,
+html[dir="rtl"] [x-placement] {
   text-align: right;
 }
 html[dir="rtl"] .menu-list > *,
-html[dir="rtl"] .popup-inner-box > * {
+html[dir="rtl"] .popup-inner-box > *,
+html[dir="rtl"] .grist-floating-menu {
   direction: rtl;
 }
 

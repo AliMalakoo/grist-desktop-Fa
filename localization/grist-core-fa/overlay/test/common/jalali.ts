@@ -213,11 +213,24 @@ describe("jalali", function() {
       assert.equal(fmt("YYYY"), "۱۴۰۵");
     });
 
+    it("should keep the separator between the date and the time", function() {
+      // The split trims the joiner for the widget, but the joined render must put it back:
+      // without it the cell shows "۱۴۰۵/۰۹/۰۶۱۴:۳۰".
+      const m2 = moment.utc("2026-11-27 14:30");
+      const like2 = {year: () => m2.year(), month: () => m2.month(), date: () => m2.date(),
+                     format: (f: string) => m2.format(f)};
+      assert.equal(formatJalaliMoment(like2, "YYYY/MM/DD HH:mm", jalaliFormatOptions()),
+        "۱۴۰۵/۰۹/۰۶ ۱۴:۳۰");
+      assert.equal(formatJalaliMoment(like2, "YYYY/MM/DD HH:mm", jalaliFormatOptions({digits: "latin"})),
+        "1405/09/06 14:30");
+    });
+
     it("should split a combined date+time format", function() {
-      assert.deepEqual(splitDateFormat("YYYY/MM/DD HH:mm"), {date: "YYYY/MM/DD", time: "HH:mm"});
+      assert.deepEqual(splitDateFormat("YYYY/MM/DD HH:mm"),
+        {date: "YYYY/MM/DD", time: "HH:mm", joiner: " "});
       assert.deepEqual(splitDateFormat("YYYY-MM-DD HH:mm:ss"),
-        {date: "YYYY-MM-DD", time: "HH:mm:ss"});
-      assert.deepEqual(splitDateFormat("YYYY-MM-DD"), {date: "YYYY-MM-DD", time: ""});
+        {date: "YYYY-MM-DD", time: "HH:mm:ss", joiner: " "});
+      assert.deepEqual(splitDateFormat("YYYY-MM-DD"), {date: "YYYY-MM-DD", time: "", joiner: ""});
     });
   });
 

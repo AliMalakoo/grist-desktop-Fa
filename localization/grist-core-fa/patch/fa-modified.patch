@@ -1,5 +1,160 @@
+diff --git a/app/client/components/BaseView.ts b/app/client/components/BaseView.ts
+index bbf5bbbb3..6074dad29 100644
+--- a/app/client/components/BaseView.ts
++++ b/app/client/components/BaseView.ts
+@@ -1013,8 +1013,15 @@ export default class BaseView extends DisposableWithEvents {
+   public viewSelectedRecordAsCard(): void {
+     if (this.isRecordCardDisabled()) { return; }
+ 
+-    const colRef = this.viewSection.viewFields().at(this.cursor.fieldIndex())!.column().id();
+     const rowId = this.viewData.getRowId(this.cursor.rowIndex()!);
++    this.viewRecordAsCard(rowId);
++  }
++
++  /** View the given record in its Record Card section, as the "View as card" command does. */
++  public viewRecordAsCard(rowId: UIRowId): void {
++    if (this.isRecordCardDisabled()) { return; }
++
++    const colRef = this.viewSection.viewFields().at(this.cursor.fieldIndex())!.column().id();
+     const sectionId = this.viewSection.tableRecordCard().id();
+     const anchorUrlState = { hash: { colRef, rowId, sectionId, recordCard: true } };
+     urlState().pushUrl(anchorUrlState, { replace: true }).catch(reportError);
+diff --git a/app/client/components/CalendarSource.ts b/app/client/components/CalendarSource.ts
+index b6fcdd5fb..a573a9397 100644
+--- a/app/client/components/CalendarSource.ts
++++ b/app/client/components/CalendarSource.ts
+@@ -1,4 +1,4 @@
+-import { CalendarWrapper } from "app/client/components/CalendarWrapper";
++import { CalendarWidget } from "app/client/components/CalendarWrapper";
+ import { RowList, RowListener, RowSource } from "app/client/models/rowset";
+ import { theme } from "app/client/ui2018/cssVars";
+ import { getReadableColorsCombo } from "app/client/widgets/ChoiceToken";
+@@ -314,7 +314,7 @@ export class CalendarRenderer extends RowListener {
+   private _drawnEventIds = new Set<number>();
+ 
+   constructor(
+-    private _cal: CalendarWrapper,
++    private _cal: CalendarWidget,
+     private _source: CalendarSource,
+     private _visible: RowSource,
+     private _readRecord: ReadRecord,
+diff --git a/app/client/components/CalendarView.ts b/app/client/components/CalendarView.ts
+index e56292787..d1bb8dcf2 100644
+--- a/app/client/components/CalendarView.ts
++++ b/app/client/components/CalendarView.ts
+@@ -4,11 +4,13 @@ import {
+   ReadRecord,
+ } from "app/client/components/CalendarSource";
+ import {
+-  CalendarHost, CalendarWrapper, cssCalendarContainer, getCalendarColumns, Perspective, PERSPECTIVES,
++  CalendarHost, CalendarWidget, CalendarWrapper, cssCalendarContainer, getCalendarColumns,
++  Perspective, PERSPECTIVES,
+ } from "app/client/components/CalendarWrapper";
++import { JalaliCalendar } from "app/client/components/JalaliCalendar";
+ import { GristDoc } from "app/client/components/GristDoc";
+ import { Delay } from "app/client/lib/Delay";
+-import { makeT } from "app/client/lib/localization";
++import { isRtlInterface, makeT } from "app/client/lib/localization";
+ import { ColumnRec, ViewSectionRec } from "app/client/models/DocModel";
+ import { reportError } from "app/client/models/errors";
+ import { urlState } from "app/client/models/gristUrlState";
+@@ -19,6 +21,7 @@ import { icon } from "app/client/ui2018/icons";
+ import { gristThemeObs } from "app/client/ui2018/theme";
+ import { CellValue, UserAction } from "app/common/DocActions";
+ import { isDateOnlyType } from "app/common/gristTypes";
++import { shouldUseJalali } from "app/common/jalali";
+ import { RowFilterFunc } from "app/common/RowFilterFunc";
+ import { WidgetColumnMap } from "app/plugin/CustomSectionAPI";
+ import { UIRowId } from "app/plugin/GristAPI";
+@@ -32,16 +35,16 @@ const t = makeT("CalendarView");
+ const testId = makeTestId("test-calendar-");
+ 
+ /**
+- * CalendarView renders records of the underlying table as events in a Toast UI Calendar, with
+- * day/week/month perspectives.
++ * CalendarView renders records of the underlying table as events, with day/week/month perspectives.
+  *
+  * This is the Grist half: column mapping, reading rows, writing user actions, cursor linking and
+- * the toolbar. The calendar itself lives in CalendarWrapper. The two talk through the CalendarHost
+- * methods on this class: CalendarWrapper reports row ids, and this class turns them into Grist
+- * actions.
++ * the toolbar. The grid itself is one of two engines behind CalendarWidget: CalendarWrapper (the
++ * Toast UI Calendar, Gregorian) or JalaliCalendar (a custom right-to-left Jalali engine), picked
++ * by shouldUseJalali() when the view is created. This class talks to the CalendarHost methods on
++ * the engine: the engine reports row ids, and this class turns them into Grist actions.
+  */
+ export class CalendarView extends BaseView implements CalendarHost {
+-  private _calendar: CalendarWrapper | null = null;
++  private _calendar: CalendarWidget | null = null;
+ 
+   // The date index, rebuilt whenever the mapping or a mapped column's type changes. Held rather
+   // than owned outright, because a rebuild replaces it: creating into a Holder disposes the old one
+@@ -117,14 +120,19 @@ export class CalendarView extends BaseView implements CalendarHost {
+   }
+ 
+   /**
+-   * The async part of the constructor. The Toast UI module is loaded on demand, so the calendar
++   * The async part of the constructor. The calendar module is loaded on demand, so the calendar
+    * cannot exist yet when the constructor returns. The constructor starts this and does not wait
+    * for it; everything that needs a live calendar checks `this._calendar` first.
++   *
++   * When the document or the interface language is Jalali, the custom right-to-left engine is
++   * built instead of Toast UI: TUI's month matrix is Gregorian and cannot be handed a Jalali one,
++   * so the Jalali calendar has its own grid (JalaliCalendar). Both speak CalendarWidget.
+    */
+   public async init() {
+-    const calendar = await CalendarWrapper.load(
+-      this, this._calendarDom, this._titleDom, this._perspective.get());
+-    if (!calendar) { return; }   // the section was disposed while TUI was loading
++    const calendar: CalendarWidget | null = shouldUseJalali()
++      ? await JalaliCalendar.load(this, this._calendarDom, this._titleDom, this._perspective.get())
++      : await CalendarWrapper.load(this, this._calendarDom, this._titleDom, this._perspective.get());
++    if (!calendar) { return; }   // the section was disposed while the calendar module was loading
+     this._calendar = this.autoDispose(calendar);
+ 
+     // disableEditing is a ko.computed that depends on linking state (BaseView.ts), so it can flip
+@@ -381,11 +389,14 @@ export class CalendarView extends BaseView implements CalendarHost {
+   private _buildDom() {
+     this._titleDom = cssCalendarTitle(testId("title"));
+     this._calendarDom = cssCalendarContainer(testId("widget"));
++    // In a right-to-left document, backwards in time reads rightwards: swap the arrows so the
++    // "previous" button points right and "next" points left.
++    const rtl = isRtlInterface();
+     const navGroup = cssNavGroup(
+-      basicButton(icon("ArrowLeft"),
++      basicButton(icon(rtl ? "ArrowRight" : "ArrowLeft"),
+         dom.on("click", () => this._calendar?.go("prev")), testId("prev")),
+       basicButton(t("Today"), dom.on("click", () => this._calendar?.go("today")), testId("today")),
+-      basicButton(icon("ArrowRight"),
++      basicButton(icon(rtl ? "ArrowLeft" : "ArrowRight"),
+         dom.on("click", () => this._calendar?.go("next")), testId("next")),
+     );
+     // Day/Week/Month is a segmented toggle: the standard Grist button group, with the current view
+@@ -464,7 +475,7 @@ interface Field {
+  * so every row costs two number comparisons against the index and navigating re-reads nothing.
+  * Reaching back into the index is safe because CalendarSource updates it before reporting a change.
+  */
+-function inRange(source: CalendarSource, cal: CalendarWrapper): RowFilterFunc<UIRowId> {
++function inRange(source: CalendarSource, cal: CalendarWidget): RowFilterFunc<UIRowId> {
+   const { fromMs, toMs } = cal.getVisibleRange();
+   return rowId => source.isInRange(rowId, fromMs, toMs);
+ }
+@@ -552,11 +563,11 @@ const cssNavGroup = styled("div", `
+ // hovered/primary button is raised (position + z-index) so its border paints on top of neighbors.
+ const cssPerspectiveGroup = styled(cssButtonGroup, `
+   align-items: center;
+-  margin-left: auto;
++  margin-inline-start: auto;
+   flex: none;
+   ${cssToolbarButtons}
+   & > .${cssButton.className}:not(:first-child) {
+-    margin-left: -1px;
++    margin-inline-start: -1px;
+   }
+   & > .${cssButton.className}:hover,
+   & > .${cssButton.className}-primary {
 diff --git a/app/client/components/CalendarWrapper.ts b/app/client/components/CalendarWrapper.ts
-index cf746d4..a2ed981 100644
+index cf746d44e..62108e8c2 100644
 --- a/app/client/components/CalendarWrapper.ts
 +++ b/app/client/components/CalendarWrapper.ts
 @@ -1,6 +1,6 @@
@@ -10,7 +165,81 @@ index cf746d4..a2ed981 100644
  import { theme } from "app/client/ui2018/cssVars";
  import { ColumnsToMap } from "app/plugin/CustomSectionAPI";
  
-@@ -256,7 +256,7 @@ export class CalendarWrapper extends Disposable {
+@@ -16,6 +16,40 @@ const testId = makeTestId("test-calendar-");
+ export type Perspective = "day" | "week" | "month";
+ export const PERSPECTIVES: Perspective[] = ["day", "week", "month"];
+ 
++/**
++ * The surface CalendarView and CalendarRenderer talk to. Two engines implement it: CalendarWrapper
++ * (ToastUI, Gregorian) and JalaliCalendar (a custom right-to-left engine, used when the document
++ * or the interface language is Jalali). Anything that drives a calendar should type it against
++ * this, not against an engine.
++ */
++export interface CalendarWidget extends Disposable {
++  // Wraps a date in the engine's date class (TZDate for both engines).
++  tzDate(date: CalendarDate): TZDate;
++  getViewName(): string;
++  // True when the caller should limit how many events it draws per day.
++  capsEventsPerDay(): boolean;
++  // The date the grid is anchored on.
++  getDate(): TZDate;
++  setDate(date: Date | TZDate): void;
++  // The range the grid currently shows, both ends included, in milliseconds.
++  getVisibleRange(): { fromMs: number; toMs: number };
++  render(): void;
++  setTheme(): void;
++  setReadOnly(isReadOnly: boolean): void;
++  updateTitle(): void;
++  changeView(view: Perspective): void;
++  go(method: "prev" | "next" | "today"): void;
++  updateUIAfterNavigation(): void;
++  setAllDayOnly(allDayOnly: boolean): void;
++  createEvents(events: EventObject[]): void;
++  updateEvent(rowId: number, event: EventObject): void;
++  deleteEvent(rowId: number): void;
++  clearEvents(): void;
++  getEvent(rowId: number): EventObject | null | undefined;
++  setSelected(rowId: number | null): void;
++  setHiddenCounts(hiddenPerDay: Map<string, number>): void;
++}
++
+ /**
+  * What CalendarWrapper asks Grist to do. The calendar knows only row ids and dates. Everything that
+  * needs a document (is this editable, where is the cursor, write this row) goes through here.
+@@ -49,7 +83,7 @@ export interface CalendarHost extends Disposable {
+  * Dropped from the old widget: TUI's form and detail popups with their key handling, the i18next
+  * translation code, and a `mouseup` fix for stuck drags that relied on TUI v1 internals.
+  */
+-export class CalendarWrapper extends Disposable {
++export class CalendarWrapper extends Disposable implements CalendarWidget {
+   /**
+    * Loads the TUI module (imports.js keeps one copy) and builds the calendar inside `container`.
+    * Returns null if the host was disposed while the module was still loading. Named `load` rather
+@@ -93,9 +127,12 @@ export class CalendarWrapper extends Disposable {
+   ) {
+     super();
+     const startDayOfWeek = weekStartToIndex(this._weekStart);
++    // Weekday names for the grid header, in the interface language. TUI otherwise draws
++    // English "Sun..Sat" with Latin digits, even when the title above them is in Persian.
++    const dayNames = getWeekdayNames();
+     this._calendar = new Ctor(this._container, {
+-      week: { taskView: false, startDayOfWeek },
+-      month: { startDayOfWeek },
++      week: { taskView: false, startDayOfWeek, dayNames },
++      month: { startDayOfWeek, dayNames },
+       usageStatistics: false,   // never phone home to Google Analytics
+       defaultView: perspective,
+       isReadOnly: this._host.isReadOnly(),
+@@ -106,7 +143,7 @@ export class CalendarWrapper extends Disposable {
+       // selectDateTime directly (no popup): we add the Grist row for the dragged range and open
+       // Grist's Record Card on it. Double-click an existing event also opens the Record Card.
+       gridSelection: { enableDblClick: true, enableClick: false },
+-      template: this._timeTemplates(),
++      template: this._gridTemplates(),
+       calendars: [{
+         id: CALENDAR_NAME,
+         // Never shown: we use a single calendar, and TUI's popups (which would display this) are
+@@ -256,7 +293,7 @@ export class CalendarWrapper extends Disposable {
      const current = cal.getDate().toDate();
      let title: string;
      if (view === "day") {
@@ -19,7 +248,7 @@ index cf746d4..a2ed981 100644
          weekday: "short", day: "numeric", month: "short", year: "numeric",
        });
      } else if (view === "week") {
-@@ -268,9 +268,10 @@ export class CalendarWrapper extends Disposable {
+@@ -268,9 +305,10 @@ export class CalendarWrapper extends Disposable {
          { day: "numeric" } :
          (sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
        const endFmt: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
@@ -32,7 +261,43 @@ index cf746d4..a2ed981 100644
      }
      this._titleDom.textContent = title;
    }
-@@ -599,7 +600,7 @@ export const cssCalendarContainer = styled("div", `
+@@ -422,10 +460,34 @@ export class CalendarWrapper extends Disposable {
+   // now-indicator default to different styles ("03 pm" vs "15:44"); format both with one helper so
+   // they agree. The drag-selection label can't be templated, so it's hidden via CSS and redrawn as
+   // an overlay in _syncSelectionOverlay to match.
+-  private _timeTemplates(): NonNullable<Options["template"]> {
++  // Hour labels and the day/weekday/month-cell bits of the grid, in the interface language.
++  // TUI's defaults hard-code English weekday names and Latin digits, which shows through in a
++  // Persian calendar next to the Persian title; the classes of the default templates are kept,
++  // so existing CSS and the <<more>> count painting in _paintHiddenCounts keep working.
++  private _gridTemplates(): NonNullable<Options["template"]> {
+     return {
+       timegridDisplayPrimaryTime: ({ time }) => formatHourMinute(time, this._timeFormat),
+       timegridNowIndicatorLabel: ({ time }) => formatHourMinute(time, this._timeFormat),
++      weekDayName: (model) =>
++        `<p><span class="day-name__date">${localizedNumber(model.date)}</span>\u00A0\u00A0` +
++        `<span class="day-name__name">${model.dayName}</span></p>`,
++      monthGridHeader: (model) => {
++        // model.date is "YYYY-MM-DD".
++        const day = parseInt(model.date.split("-")[2], 10);
++        const decorator = model.isToday ? " weekday-grid-date-decorator" : "";
++        return `<span class="weekday-grid-date${decorator}">${localizedNumber(day)}</span>`;
++      },
++      monthMoreTitleDate: (moreTitle) => {
++        const dayIndex = moreTitle.day;
++        const date = typeof moreTitle.date === "number" ?
++          moreTitle.date : parseInt(String(moreTitle.date), 10);
++        const dayName = weekdayNameShort(dayIndex);
++        // Keep the zero padding of TUI's default, in the locale's own zero.
++        const zero = localizedNumber(0);
++        const dateText = localizedNumber(date).padStart(2, zero);
++        return `<p><span class="more-title-date">${dateText}</span>` +
++          `<span class="more-title-day">${dayName}</span></p>`;
++      },
+     };
+   }
+ 
+@@ -599,7 +661,7 @@ export const cssCalendarContainer = styled("div", `
  type CalendarThemeOption = NonNullable<Options["theme"]>;
  
  type TimeFormat = "12h" | "24h";
@@ -41,11 +306,42 @@ index cf746d4..a2ed981 100644
  
  const HOURS_PER_DAY = 24;
  
-@@ -638,18 +639,22 @@ function formatSelectionLabel(text: string, format: TimeFormat): string | null {
+@@ -638,18 +700,53 @@ function formatSelectionLabel(text: string, format: TimeFormat): string | null {
    return null;
  }
  
 -// TUI's startDayOfWeek index: 0=Sun..6=Sat. We only distinguish Sunday/Monday.
++// The short weekday names in the interface language, indexed the way TUI expects them
++// (0=Sunday..6=Saturday). 2023-10-01 was a Sunday. "short" is full-width in Persian, which is
++// what the title uses too.
++function weekdayNameShort(dayIndex: number): string {
++  return weekdayNamesShort()[dayIndex];
++}
++
++const weekdayNamesCache = new Map<string, [string, string, string, string, string, string, string]>();
++
++function weekdayNamesShort(): [string, string, string, string, string, string, string] {
++  const locale = getTitleLocale();
++  let cached = weekdayNamesCache.get(locale);
++  if (!cached) {
++    const fmt = new Intl.DateTimeFormat(locale, { weekday: "short", timeZone: "UTC" });
++    cached = [...Array(7)].map((_, i) =>
++      fmt.format(new Date(Date.UTC(2023, 9, 1 + i)))) as
++      [string, string, string, string, string, string, string];
++    weekdayNamesCache.set(locale, cached);
++  }
++  return cached;
++}
++
++function getWeekdayNames(): [string, string, string, string, string, string, string] {
++  return weekdayNamesShort();
++}
++
++// A number in the interface language, so Persian digits are used where the reader sees Persian.
++function localizedNumber(num: number): string {
++  return new Intl.NumberFormat(getTitleLocale(), { useGrouping: false }).format(num);
++}
++
 +// TUI's startDayOfWeek index: 0=Sun..6=Sat.
  function weekStartToIndex(start: WeekStart): number {
 -  return start === "mon" ? 1 : 0;
@@ -69,7 +365,7 @@ index cf746d4..a2ed981 100644
        return weekInfo.firstDay === 1 ? "mon" : "sun";
      }
    } catch (e) {
-@@ -658,6 +663,26 @@ function getLocaleWeekStart(): WeekStart {
+@@ -658,6 +755,26 @@ function getLocaleWeekStart(): WeekStart {
    return "sun";
  }
  
@@ -96,8 +392,579 @@ index cf746d4..a2ed981 100644
  // The time format: 24h if the browser locale formats an afternoon time without an am/pm marker,
  // otherwise 12h.
  function getLocaleTimeFormat(): TimeFormat {
+diff --git a/app/client/components/Cursor.ts b/app/client/components/Cursor.ts
+index e988bd959..f8fe9976c 100644
+--- a/app/client/components/Cursor.ts
++++ b/app/client/components/Cursor.ts
+@@ -5,6 +5,7 @@
+ 
+ import BaseView from "app/client/components/BaseView";
+ import * as commands from "app/client/components/commands";
++import { isRtlInterface } from "app/client/lib/localization";
+ import { DataRowModel } from "app/client/models/DataRowModel";
+ import { LazyArrayModel } from "app/client/models/DataTableModel";
+ import { CursorPos, UIRowId } from "app/plugin/GristAPI";
+@@ -42,6 +43,12 @@ function nextSequenceNum() { // First call to this func should return 1
+  * @param {Object} optCursorPos: Optional object containing rowId and fieldIndex properties
+  *  to which the cursor should be initialized.
+  */
++// Returns 1 for a left-to-right interface and -1 for right-to-left, i.e. the sign to add to
++// the field index when moving one cell in the direction the Right arrow points.
++function hArrowSign(): 1 | -1 {
++  return isRtlInterface() ? -1 : 1;
++}
++
+ export class Cursor extends Disposable {
+   /**
+    * The commands closely tied to the cursor. They are active when the BaseView containing this
+@@ -51,8 +58,10 @@ export class Cursor extends Disposable {
+     // The cursor up/down commands may need to be a bit different in non-grid views.
+     cursorUp(this: Cursor) { this.rowIndex(this.rowIndex()! - 1); },
+     cursorDown(this: Cursor) { this.rowIndex(this.rowIndex()! + 1); },
+-    cursorLeft(this: Cursor) { this.fieldIndex(this.fieldIndex() - 1); },
+-    cursorRight(this: Cursor) { this.fieldIndex(this.fieldIndex() + 1); },
++    // Arrow keys follow the visual direction of the interface: in the RTL layout the
++    // field index grows to the left, so the sign of the horizontal arrows flips.
++    cursorLeft(this: Cursor) { this.fieldIndex(this.fieldIndex() - hArrowSign()); },
++    cursorRight(this: Cursor) { this.fieldIndex(this.fieldIndex() + hArrowSign()); },
+     skipUp(this: Cursor) { this.rowIndex(this.rowIndex()! - 5); },
+     skipDown(this: Cursor) { this.rowIndex(this.rowIndex()! + 5); },
+     pageUp(this: Cursor) { this.rowIndex(this.rowIndex()! - 20); },    // TODO Not really pageUp
+diff --git a/app/client/components/DetailView.ts b/app/client/components/DetailView.ts
+index 5065470cf..a9aeb019e 100644
+--- a/app/client/components/DetailView.ts
++++ b/app/client/components/DetailView.ts
+@@ -11,7 +11,7 @@ import { viewCommands } from "app/client/components/RegionFocusSwitcher";
+ import { isEventOnLink } from "app/client/lib/domUtils";
+ import kd from "app/client/lib/koDom";
+ import koDomScrolly from "app/client/lib/koDomScrolly";
+-import { makeT } from "app/client/lib/localization";
++import { isRtlInterface, makeT } from "app/client/lib/localization";
+ import { PasteData } from "app/client/lib/tableUtil";
+ import * as tableUtil from "app/client/lib/tableUtil";
+ import { testPendingScrolls } from "app/client/lib/testPendingOps";
+@@ -449,12 +449,12 @@ export default class DetailView extends BaseView {
+         ),
+         dom("div.detail-buttons",
+           dom("div.detail-button.detail-left",
+-            icon("ArrowLeft"),
++            icon(isRtlInterface() ? "ArrowRight" : "ArrowLeft"),
+             dom.on("click", () => { this.cursor.rowIndex(this.cursor.rowIndex()! - 1); }),
+             dom.cls("disabled", use => use(this.cursor.rowIndex) === 0),
+           ),
+           dom("div.detail-button.detail-right",
+-            icon("ArrowRight"),
++            icon(isRtlInterface() ? "ArrowLeft" : "ArrowRight"),
+             dom.on("click", () => { this.cursor.rowIndex(this.cursor.rowIndex()! + 1); }),
+             dom.cls("disabled", use => use(this.cursor.rowIndex)! >= this.viewData.all().length - 1),
+           ),
+diff --git a/app/client/components/Forms/FormView.ts b/app/client/components/Forms/FormView.ts
+index 36a14e2ff..7f1d0b3b6 100644
+--- a/app/client/components/Forms/FormView.ts
++++ b/app/client/components/Forms/FormView.ts
+@@ -8,7 +8,7 @@ import * as style from "app/client/components/Forms/styles";
+ import { GristDoc } from "app/client/components/GristDoc";
+ import { copyToClipboard } from "app/client/lib/clipboardUtils";
+ import { AsyncComputed, makeTestId, stopEvent } from "app/client/lib/domUtils";
+-import { makeT } from "app/client/lib/localization";
++import { isRtlInterface, makeT } from "app/client/lib/localization";
+ import { localStorageBoolObs } from "app/client/lib/localStorageObs";
+ import { logTelemetryEvent } from "app/client/lib/telemetry";
+ import { ViewFieldRec, ViewSectionRec } from "app/client/models/DocModel";
+@@ -27,10 +27,12 @@ import { INITIAL_FIELDS_COUNT } from "app/common/Forms";
+ import { isOwner } from "app/common/roles";
+ import { getGristConfig } from "app/common/urlUtils";
+ 
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import { Computed, dom, Holder, IDomArgs, MultiHolder, Observable } from "grainjs";
+ import * as ko from "knockout";
+ import isEqual from "lodash/isEqual";
+-import { defaultMenuOptions, IOpenController, setPopupToCreateDom } from "popweasel";
++import { defaultMenuOptions, IOpenController } from "popweasel";
+ import { v4 as uuidv4 } from "uuid";
+ 
+ const t = makeT("FormView");
+@@ -296,8 +298,9 @@ export class FormView extends BaseView {
+       ...keyboardActions,
+       cursorDown: keyboardActions.nextField,
+       cursorUp: keyboardActions.prevField,
+-      cursorLeft: keyboardActions.prevField,
+-      cursorRight: keyboardActions.nextField,
++      // Arrow keys follow the visual direction; in RTL the visual left leads to the next field.
++      cursorLeft: isRtlInterface() ? keyboardActions.nextField : keyboardActions.prevField,
++      cursorRight: isRtlInterface() ? keyboardActions.prevField : keyboardActions.nextField,
+       shiftDown: keyboardActions.lastField,
+       shiftUp: keyboardActions.firstField,
+       editField: keyboardActions.edit,
+@@ -716,7 +719,7 @@ your form via that link will see an error.",
+           dom("div", t("Share")),
+           dom.show(use => this._isOwner && use(this._published)),
+           (elem) => {
+-            setPopupToCreateDom(elem, ctl => this._buildShareMenu(ctl), {
++            rtlSetPopupToCreateDom(elem, ctl => this._buildShareMenu(ctl), {
+               ...defaultMenuOptions,
+               placement: "top-end",
+             });
+diff --git a/app/client/components/GridView.css b/app/client/components/GridView.css
+index 723552029..e42b443df 100644
+--- a/app/client/components/GridView.css
++++ b/app/client/components/GridView.css
+@@ -14,7 +14,7 @@
+   --gridview-header-height: 24px;
+   /* Width of the row-number gutter, and of the record's left border beside it. Both are set
+    * from JS on this element (both zero when row numbers are hidden); these are the defaults. */
+-  --row-num-width: 52px;
++  --row-num-width: 72px;
+   --row-num-border: 1px;
+ }
+ 
+@@ -117,6 +117,32 @@
+   right: 0px;
+ }
+ 
++/* Per-row button to open the record in a card; sits on the flow-start edge of the gutter,
++   away from the row number and the selection check, and never covers either. */
++.record_card_toggle {
++  position: absolute;
++  left: 2px;
++  top: 50%;
++  transform: translateY(-50%);
++  z-index: 21; /* above the sticky gutter's content, below menus */
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  width: 18px;
++  height: 18px;
++  padding: 0;
++  border: none;
++  border-radius: 4px;
++  background: transparent;
++  color: var(--grist-theme-text-light, #929299);
++  cursor: pointer;
++}
++.record_card_toggle:hover,
++.record_card_toggle:focus-visible {
++  color: var(--grist-theme-text, #262b33);
++  background: var(--grist-theme-hover, rgba(38, 43, 51, 0.08));
++}
++
+ /* Show on hover or when menu is opened */
+ .gridview_data_row_num:hover .menu_toggle,
+ .gridview_data_row_num .menu_toggle.weasel-popup-open  {
+@@ -125,6 +151,9 @@
+ 
+ 
+ @media print {
++  .record_card_toggle {
++    display: none;
++  }
+   /* For printing, !important tag is needed for background colors to be respected; but normally,
+    * do not want !important, as it interferes with row selection.
+    */
+diff --git a/app/client/components/GridView.ts b/app/client/components/GridView.ts
+index a468e9119..d232a5f5e 100644
+--- a/app/client/components/GridView.ts
++++ b/app/client/components/GridView.ts
+@@ -42,6 +42,7 @@ import {
+   freezeAction,
+   IMultiColumnContextMenu,
+ } from "app/client/ui/GridViewMenus";
++import { icon } from "app/client/ui2018/icons";
+ import { menuToggle } from "app/client/ui/MenuToggle";
+ import { mouseDragMatchElem } from "app/client/ui/mouseDrag";
+ import { IRowContextMenu, RowContextMenu } from "app/client/ui/RowContextMenu";
+@@ -59,6 +60,8 @@ import { Sort } from "app/common/SortSpec";
+ import { CombinedStyle } from "app/common/Styles";
+ import { CursorPos, UIRowId } from "app/plugin/GristAPI";
+ 
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import convert from "color-convert";
+ import {
+   BindableValue,
+@@ -79,7 +82,7 @@ import {
+ import ko from "knockout";
+ import debounce from "lodash/debounce";
+ import identity from "lodash/identity";
+-import { IOpenController, PopupControl, setPopupToCreateDom } from "popweasel";
++import { IOpenController, PopupControl } from "popweasel";
+ import _ from "underscore";
+ 
+ // Disable member-ordering linting temporarily, so that it's easier to review the conversion to
+@@ -111,7 +114,7 @@ type FreeSpaceRenderer = (owner: IDisposableOwner, view: GridView) => DomContent
+ // size of the plus width
+ const PLUS_WIDTH = 40;
+ // size of the row number field
+-const ROW_NUMBER_WIDTH = 52;
++const ROW_NUMBER_WIDTH = 72;
+ 
+ interface InsertColOptions {
+   colInfo?: ColInfo;
+@@ -512,6 +515,15 @@ export default class GridView extends BaseView {
+       this.cursor.rowIndex(this.cursor.rowIndex()! - 1);
+     },
+     cursorRight: function() {
++      if (isRtl()) {
++        // In the RTL layout the fields grow to the left, so the Right arrow walks the index
++        // down, and the edge to reveal at the flow start is the left one.
++        if (this.cursor.fieldIndex() === 0) {
++          this.scrollPaneLeft();
++        }
++        this.cursor.fieldIndex(this.cursor.fieldIndex() - 1);
++        return;
++      }
+       if (this.cursor.fieldIndex() === this.viewSection.viewFields().peekLength - 1) {
+         // When the cursor is in the rightmost column, the view may not be scrolled all the way to
+         // the right (i.e. in the case of a wide column).
+@@ -520,6 +532,15 @@ export default class GridView extends BaseView {
+       this.cursor.fieldIndex(this.cursor.fieldIndex() + 1);
+     },
+     cursorLeft: function() {
++      if (isRtl()) {
++        // In the RTL layout the Left arrow walks the index up, revealing the far (left) edge
++        // from the last field.
++        if (this.cursor.fieldIndex() === this.viewSection.viewFields().peekLength - 1) {
++          this.scrollPaneRight();
++        }
++        this.cursor.fieldIndex(this.cursor.fieldIndex() + 1);
++        return;
++      }
+       if (this.cursor.fieldIndex() === 0) {
+         // When the cursor is in the leftmost column, the view may not be scrolled all the way to
+         // the left (i.e. in the case of a wide column).
+@@ -529,12 +550,13 @@ export default class GridView extends BaseView {
+     },
+     shiftDown: function() { this._shiftSelect({ step: 1, direction: "down" }); },
+     shiftUp: function() { this._shiftSelect({ step: 1, direction: "up" }); },
+-    shiftRight: function() { this._shiftSelect({ step: 1, direction: "right" }); },
+-    shiftLeft: function() { this._shiftSelect({ step: 1, direction: "left" }); },
++    // Arrow keys follow the visual direction: in RTL the field index grows to the left.
++    shiftRight: function() { this._shiftSelect({ step: 1, direction: isRtl() ? "left" : "right" }); },
++    shiftLeft: function() { this._shiftSelect({ step: 1, direction: isRtl() ? "right" : "left" }); },
+     ctrlShiftDown: function() { this._shiftSelectUntilFirstOrLastNonEmptyCell({ direction: "down" }); },
+     ctrlShiftUp: function() { this._shiftSelectUntilFirstOrLastNonEmptyCell({ direction: "up" }); },
+-    ctrlShiftRight: function() { this._shiftSelectUntilFirstOrLastNonEmptyCell({ direction: "right" }); },
+-    ctrlShiftLeft: function() { this._shiftSelectUntilFirstOrLastNonEmptyCell({ direction: "left" }); },
++    ctrlShiftRight: function() { this._shiftSelectUntilFirstOrLastNonEmptyCell({ direction: isRtl() ? "left" : "right" }); },
++    ctrlShiftLeft: function() { this._shiftSelectUntilFirstOrLastNonEmptyCell({ direction: isRtl() ? "right" : "left" }); },
+     fieldEditSave: function() { this.cursor.rowIndex(this.cursor.rowIndex()! + 1); },
+     // Re-define editField after fieldEditSave to make it take precedence for the Enter key.
+     editField: function(event?: KeyboardEvent) {
+@@ -571,7 +593,7 @@ export default class GridView extends BaseView {
+     this.onScroll();
+ 
+     // Initialize scroll position.
+-    this.scrollPane.scrollLeft = this.viewSection.lastScrollPos.scrollLeft;
++    writeScrollLeft(this.scrollPane, this.viewSection.lastScrollPos.scrollLeft);
+     this.scrolly.scrollToSavedPos(this.viewSection.lastScrollPos);
+ 
+     if (this._inline) {
+@@ -1169,11 +1191,11 @@ export default class GridView extends BaseView {
+   }
+ 
+   protected scrollPaneRight() {
+-    this.scrollPane.scrollLeft = this.scrollPane.scrollWidth;
++    writeScrollLeft(this.scrollPane, this.scrollPane.scrollWidth);
+   }
+ 
+   protected scrollPaneLeft() {
+-    this.scrollPane.scrollLeft = 0;
++    writeScrollLeft(this.scrollPane, 0);
+   }
+ 
+   protected selectColumn(colIndex: number) {
+@@ -1309,14 +1331,19 @@ export default class GridView extends BaseView {
+    *        |0____|1____|..5|6__*_|         Returns 6
+    *        |0____|1____|..5|6____| *       Returns 6
+    **/
++  // Convert a mouse event's pageX into "flow" coordinates: a distance from the flow-start edge
++  // of the scroll pane (the left edge in LTR, the right edge in RTL).
++  protected _mouseFlowX(event: MouseEvent): number {
++    const rect = this.scrollPane.getBoundingClientRect();
++    return isRtl() ? rect.right - event.pageX : event.pageX - rect.left;
++  }
++
+   protected getMousePosCol(mouseX: number) {
+     const scrollLeft = this.scrollLeft();
+-    // Offset to left edge of gridView viewports
+-    const headerOffset = this._cornerDom.getBoundingClientRect().right;
+-    // Convert mouse x to grid x (not including scroll yet).
+-    // GridX now has x position as if the grid pane is covering
+-    // the whole screen, it still can be scrolled, so 0px is not equal to A column yet.
+-    const gridX = mouseX - headerOffset;
++    const cornerRect = this._cornerDom.getBoundingClientRect();
++    // Convert the mouse x from page coordinates into "flow" coordinates: a left-to-right
++    // distance from the start of the first data column (which is the right edge for RTL).
++    const gridX = isRtl() ? cornerRect.left - mouseX : mouseX - cornerRect.right;
+     // Total width of frozen columns (if zero, no frozen column set)
+     const frozenWidth = this.frozenWidth.peek();
+     // Frozen columns can be scrolled also, but not more then frozenOffset.
+@@ -1386,7 +1413,7 @@ export default class GridView extends BaseView {
+   // TODO : is this necessary? make passive. Also this could be removed soon I think
+   protected onScroll() {
+     const pane = this.scrollPane;
+-    this.scrollLeft(pane.scrollLeft);
++    this.scrollLeft(readScrollLeft(pane));
+     this.scrollTop(pane.scrollTop);
+     this.width(pane.clientWidth);
+   }
+@@ -1461,12 +1488,12 @@ export default class GridView extends BaseView {
+       this.colLine = dom(
+         "div.col_indicator_line",
+         kd.show(() => this.cellSelector.isCurrentDragType(selector.COL)),
+-        dom.style("left", this.cellSelector.col.linePos),
++        dom.style(flowSide(), this.cellSelector.col.linePos),
+       ),
+       this.colShadow = dom(
+         "div.column_shadow",
+         kd.show(() => this.cellSelector.isCurrentDragType(selector.COL)),
+-        dom.style("left", use => (use(this.dragX) - this.colShadowAdjust) + "px"),
++        dom.style(flowSide(), use => (use(this.dragX) - this.colShadowAdjust) + "px"),
+       ),
+       this.rowLine = dom(
+         "div.row_indicator_line",
+@@ -1487,7 +1514,7 @@ export default class GridView extends BaseView {
+           dom.onDispose(() => {
+           // Save the previous scroll values to the section.
+             this.viewSection.lastScrollPos = _.extend({
+-              scrollLeft: this.scrollPane.scrollLeft,
++              scrollLeft: readScrollLeft(this.scrollPane),
+             }, this.scrolly.getScrollPos());
+           }),
+ 
+@@ -1589,7 +1616,7 @@ export default class GridView extends BaseView {
+                       dom.on("click", ev =>
+                         this.maybeSelectColumn((ev.currentTarget as HTMLElement).parentElement!, field)),
+                       (elem: Element) => {
+-                        filterTriggerCtl = setPopupToCreateDom(
++                        filterTriggerCtl = rtlSetPopupToCreateDom(
+                           elem,
+                           ctl => this._columnFilterMenu(ctl, field, { showAllFiltersButton: true }),
+                           {
+@@ -1621,7 +1648,11 @@ export default class GridView extends BaseView {
+           ), // END COL HEADER BOX
+ 
+           koDomScrolly.scrolly(data, {
+-            ...(this._inline ? {} : { paddingBottom: 80, paddingRight: 20 }),
++            ...(this._inline ? {} : {
++              paddingBottom: 80,
++              // Room to scroll the last column past the edge; the far side depends on the flow.
++              ...(isRtl() ? { paddingLeft: 20 } : { paddingRight: 20 }),
++            }),
+             cb: this._onRenderedVisibleRows.bind(this),
+           }, renderRow.bind(this)),
+ 
+@@ -1708,6 +1739,26 @@ export default class GridView extends BaseView {
+ 
+         // rowid dom
+         dom("div.gridview_data_row_num",
++          // Open this record as a card; sits on the flow-start edge of the gutter, clear of
++          // the row number and of the selection check shown on hover. Hidden when row
++          // numbers are hidden (the gutter is 0px wide and clips its contents).
++          row._isAddRow() ? null :
++            dom.maybe((use) =>
++              use(this.viewSection.optionsObj).rowNumbers !== "hidden" &&
++              !use(this.viewSection.isTableRecordCardDisabled) &&
++              !use(this.viewSection.isVirtual), () =>
++              dom("button.record_card_toggle",
++                icon("ExpandArrows"),
++                dom.attr("title", t("View record as card")),
++                dom.attr("aria-label", t("View record as card")),
++                testId("record-card-toggle"),
++                dom.on("mousedown", (ev) => { ev.stopPropagation(); ev.preventDefault(); }),
++                dom.on("click", (ev) => {
++                  ev.stopPropagation();
++                  ev.preventDefault();
++                  this.viewRecordAsCard(row.getRowId());
++                }),
++              )),
+           dom("div.gridview_data_row_info",
+             dom.cls("linked_dst", (use) => {
+               const myRowId = use(row.id);
+@@ -1960,7 +2011,7 @@ export default class GridView extends BaseView {
+   protected colMouseMove(event: MouseEvent) {
+     if (this.gristDoc.docModel.editingFormula.peek()) { return; }
+ 
+-    const currentCol = Math.min(this.getMousePosCol(event.pageX),
++    const currentCol = Math.min(this.getMousePosCol(this._mouseFlowX(event)),
+       this.viewSection.viewFields().peekLength - 1);
+     this.cellSelector.col.end(currentCol);
+   }
+@@ -2070,12 +2121,14 @@ export default class GridView extends BaseView {
+     const colStart = this.cellSelector.colLower();
+     const colEnd = this.cellSelector.colUpper();
+     const shadowWidth = this.colRightOffsets.peek().getCumulativeValueRange(colStart, colEnd + 1);
+-    const shadowLeft = (this._rowNumWidth.peek() + this.colRightOffsets.peek().getSumTo(colStart) - this.scrollLeft());
++    const shadowPos = (this._rowNumWidth.peek() + this.colRightOffsets.peek().getSumTo(colStart) - this.scrollLeft());
++    const flowX = this._mouseFlowX(event);
+ 
+-    this.colLine.style.left = shadowLeft + "px";
+-    this.colShadow.style.left = shadowLeft + "px";
++    setFlowSide(this.colLine, shadowPos);
++    setFlowSide(this.colShadow, shadowPos);
+     this.colShadow.style.width = shadowWidth + "px";
+-    this.colShadowAdjust = event.pageX - shadowLeft;
++    this.colShadowAdjust = flowX - shadowPos;
++    this.dragX(flowX);
+     this.cellSelector.currentDragType(selector.COL);
+     this.cellSelector.col.dropIndex(this.cellSelector.colLower());
+   }
+@@ -2110,7 +2163,7 @@ export default class GridView extends BaseView {
+   }
+ 
+   protected dragCols(event: MouseEvent) {
+-    let dropIndex = Math.min(this.getMousePosCol(event.pageX),
++    let dropIndex = Math.min(this.getMousePosCol(this._mouseFlowX(event)),
+       this.viewSection.viewFields().peekLength - 1);
+     if (this.cellSelector.containsCol(dropIndex)) {
+       dropIndex = this.cellSelector.colLower();
+@@ -2135,7 +2188,7 @@ export default class GridView extends BaseView {
+     }
+     this.cellSelector.col.linePos(linePos + "px");
+     this.cellSelector.col.dropIndex(dropIndex);
+-    this.dragX(event.pageX);
++    this.dragX(this._mouseFlowX(event));
+   }
+ 
+   protected dropRows() {
+@@ -2366,12 +2419,13 @@ export default class GridView extends BaseView {
+ 
+       // Left and right pixel edge of 'viewport', starting from edge of row nums.
+       const frozenWidth = this.frozenWidth.peek();
+-      const leftEdge = this.scrollPane.scrollLeft + frozenWidth;
++      const scrollLeft = readScrollLeft(this.scrollPane);
++      const leftEdge = scrollLeft + frozenWidth;
+       const rightEdge = leftEdge + (viewWidth - frozenWidth);
+ 
+       // If cell doesn't fit onscreen, scroll to fit.
+       const scrollShift = offset - gutil.clamp(offset, leftEdge, rightEdge - fieldWidth);
+-      this.scrollPane.scrollLeft = this.scrollPane.scrollLeft + scrollShift;
++      writeScrollLeft(this.scrollPane, scrollLeft + scrollShift);
+     }
+   }
+ 
+@@ -2608,6 +2662,37 @@ function calcZebra(hex: string) {
+   return `#${convert.hsl.hex(hsl)}`;
+ }
+ 
++// RTL support (see app/client/ui/Rtl.css): in a right-to-left document the grid is laid out
++// flow-from-right -- column A is the first column from the right, the row-number gutter sticks
++// to the right edge, frozen columns stack from the right and horizontal scrolling originates
++// from the right. Browsers report scrollLeft as a negative number for overflow in RTL, so the
++// grid keeps flow-offset values ("how far scrolled from the flow start", always >= 0) in its
++// scrollLeft observable and converts at the DOM boundary with readScrollLeft/writeScrollLeft.
++// Grid x coordinates passed to the mouse helpers are likewise "flow" coordinates: a distance
++// from the flow-start edge (the right edge in RTL).
++function isRtl(): boolean {
++  return typeof document !== "undefined" && document.documentElement.getAttribute("dir") === "rtl";
++}
++function readScrollLeft(pane: HTMLElement): number {
++  const value = pane.scrollLeft;
++  return isRtl() ? Math.abs(value) : value;
++}
++function writeScrollLeft(pane: HTMLElement, value: number) {
++  pane.scrollLeft = isRtl() ? -value : value;
++}
++function flowSide(): "left" | "right" {
++  return isRtl() ? "right" : "left";
++}
++function setFlowSide(elem: HTMLElement, posPx: number) {
++  if (isRtl()) {
++    elem.style.right = posPx + "px";
++    elem.style.left = "";
++  } else {
++    elem.style.left = posPx + "px";
++    elem.style.right = "";
++  }
++}
++
+ // Currently dom.style('--custom-prop', value) from grainjs doesn't work for "custom variable"
+ // properties, so we add a helper to do that. TODO: fix grainjs to support this.
+ function styleCustomVar(property: string, valueObs: BindableValue<string | number>): DomElementMethod {
+@@ -2624,8 +2709,7 @@ function scrollBar(): { width: number; height: number } {
+ 
+ const cssFreeSpace = styled("div", `
+   position: absolute;
+-  left: var(--row-num-width, 0px);
+-  right: 0;
++  ${isRtl() ? "right: var(--row-num-width, 0px);\n  left: 0;" : "left: var(--row-num-width, 0px);\n  right: 0;"}
+   bottom: 0;
+   overflow: hidden;
+   pointer-events: none;
+diff --git a/app/client/lib/TokenField.ts b/app/client/lib/TokenField.ts
+index e920f1356..24b0ae4f5 100644
+--- a/app/client/lib/TokenField.ts
++++ b/app/client/lib/TokenField.ts
+@@ -18,6 +18,7 @@
+ import { ACItem } from "app/client/lib/ACIndex";
+ import { Autocomplete, IAutocompleteOptions } from "app/client/lib/autocomplete";
+ import { modKeyProp } from "app/client/lib/browserInfo";
++import { isRtlInterface } from "app/client/lib/localization";
+ import { colors, testId, theme } from "app/client/ui2018/cssVars";
+ import { icon } from "app/client/ui2018/icons";
+ import { csvDecodeRow, csvEncodeRow } from "app/common/csvFormat";
+@@ -65,8 +66,9 @@ export interface ITokenFieldKeyBindings {
+ export type ITokenFieldVariant = "horizontal" | "vertical";
+ 
+ const defaultKeyBindings: Required<ITokenFieldKeyBindings> = {
+-  previous: "ArrowLeft",
+-  next: "ArrowRight",
++  // The token strip flows with the text direction; move against it for "previous".
++  previous: isRtlInterface() ? "ArrowRight" : "ArrowLeft",
++  next: isRtlInterface() ? "ArrowLeft" : "ArrowRight",
+ };
+ 
+ // TokenWrap serves to distinguish multiple instances of the same token in the list.
+diff --git a/app/client/lib/autocomplete.ts b/app/client/lib/autocomplete.ts
+index f3d82213b..f7838c5ed 100644
+--- a/app/client/lib/autocomplete.ts
++++ b/app/client/lib/autocomplete.ts
+@@ -4,6 +4,7 @@
+ import { ACItem, ACResults, HighlightFunc } from "app/client/lib/ACIndex";
+ import { attachMouseOverOnMove, findAncestorChild } from "app/client/lib/domUtils";
+ import { reportError } from "app/client/models/errors";
++import { rtlPlacement } from "app/client/lib/rtlPlacement";
+ import { testId, theme } from "app/client/ui2018/cssVars";
+ import { MaybePromise } from "app/plugin/gutil";
+ 
+@@ -117,6 +118,8 @@ export class Autocomplete<Item extends ACItem> extends Disposable {
+ 
+     // Prepare and create the Popper instance, which places the content according to the options.
+     const popperOptions = merge({}, defaultPopperOptions, _options.popperOptions);
++    // Popper resolves start/end against the physical edges, so mirror them for RTL.
++    if (popperOptions.placement) { popperOptions.placement = rtlPlacement(popperOptions.placement); }
+     this._popper = createPopper(_triggerElem, content, popperOptions);
+     this.onDispose(() => this._popper.destroy());
+   }
+diff --git a/app/client/lib/koDomScrolly.js b/app/client/lib/koDomScrolly.js
+index 051771254..b678032a7 100644
+--- a/app/client/lib/koDomScrolly.js
++++ b/app/client/lib/koDomScrolly.js
+@@ -46,7 +46,12 @@ function ScrollyPane(scrolly, paneIndex, container, options, itemCreateFunc) {
+         kd.style("position", "absolute"),
+         kd.style("top", this.scrolly.blockTopPx),
+         kd.style("width", options.fitToWidth ? "100%" : ""),
+-        kd.style("padding-right", options.paddingRight + "px")
++        // Room to let the last column scroll past the flow-end edge; the side depends on the
++        // interface direction, so GridView passes paddingLeft in RTL and paddingRight otherwise.
++        typeof options.paddingRight === "number" ?
++          kd.style("padding-right", options.paddingRight + "px") : undefined,
++        typeof options.paddingLeft === "number" ?
++          kd.style("padding-left", options.paddingLeft + "px") : undefined
+       )
+     )
+   );
+@@ -658,6 +663,7 @@ Scrolly.prototype._updateRange = function() {
+  * @param {Object} options - Supported options include:
+  *    paddingBottom {number} - Number of pixels to add to bottom of scrolly
+  *    paddingRight {number} - Number of pixels to add to right of scrolly
++ *    paddingLeft {number} - Number of pixels to add to left of scrolly
+  *    fitToWidth {bool} - Whether the scrolly holds a list of layouts
+  * @param {Function} itemCreateFunc A function called as `itemCreateFunc(item)` for a number of
+  *    item models (which can get assigned to different items in `data`). Must return a single
 diff --git a/app/client/lib/localization.ts b/app/client/lib/localization.ts
-index 6780082..8e0737c 100644
+index 67800820d..8e0737c7d 100644
 --- a/app/client/lib/localization.ts
 +++ b/app/client/lib/localization.ts
 @@ -1,4 +1,6 @@
@@ -151,8 +1018,39 @@ index 6780082..8e0737c 100644
  export function detectCurrentLang() {
    const { userLocale, supportedLngs } = getGristConfig();
    const detected = userLocale ||
+diff --git a/app/client/lib/popupControl.ts b/app/client/lib/popupControl.ts
+index ae177c6a8..1c101aa2b 100644
+--- a/app/client/lib/popupControl.ts
++++ b/app/client/lib/popupControl.ts
+@@ -10,6 +10,8 @@
+  *   menuItem(elem => ctl.open(), 'do stuff...')
+  */
+ 
++import { rtlPlacement } from "app/client/lib/rtlPlacement";
++
+ import { domDispose } from "grainjs";
+ import { IOpenController, IPopupDomCreator, IPopupOptions, PopupControl } from "popweasel";
+ 
+@@ -21,13 +23,14 @@ export function popupControl(reference: Element, domCreator: IPopupDomCreator, o
+   }
+ 
+   const ctl = PopupControl.create(null);
+-
+-  ctl.attachElem(reference, openFunc, {
++  const opts: IPopupOptions = {
+     attach: "body",
+     boundaries: "viewport",
+     ...options,
+     trigger: undefined,
+-  });
++  };
++  opts.placement = rtlPlacement(opts.placement);
++  ctl.attachElem(reference, openFunc, opts);
+ 
+   return ctl;
+ }
 diff --git a/app/client/models/DocModel.ts b/app/client/models/DocModel.ts
-index 3ac935d..bece6a7 100644
+index 3ac935d0d..bece6a72b 100644
 --- a/app/client/models/DocModel.ts
 +++ b/app/client/models/DocModel.ts
 @@ -36,6 +36,7 @@ import { KoSaveableObservable } from "app/client/models/modelUtil";
@@ -177,8 +1075,800 @@ index 3ac935d..bece6a7 100644
      // An observable array of all tables, sorted by tableId, with no exclusions.
      this.allTables = this.autoDispose(this._createAllTablesArray());
  
+diff --git a/app/client/ui/ActiveUserList.ts b/app/client/ui/ActiveUserList.ts
+index ea6234118..f0075e4f9 100644
+--- a/app/client/ui/ActiveUserList.ts
++++ b/app/client/ui/ActiveUserList.ts
+@@ -1,4 +1,5 @@
+ import { lockFocusUntilRemoved } from "app/client/lib/focusUtils";
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
+ import { makeT } from "app/client/lib/localization";
+ import { UserPresenceModel } from "app/client/models/UserPresenceModel";
+ import { hoverTooltip } from "app/client/ui/tooltips";
+@@ -22,7 +23,6 @@ import {
+ import {
+   defaultMenuOptions,
+   IOpenController,
+-  setPopupToCreateDom,
+ } from "popweasel";
+ 
+ const t = makeT("ActiveUserList");
+@@ -122,7 +122,7 @@ function createRemainingUsersIndicator(
+       dom.style("font-size", "12px"),
+     ),
+     (elem) => {
+-      setPopupToCreateDom(elem, (ctl) => {
++      rtlSetPopupToCreateDom(elem, (ctl) => {
+         isRemainingUsersMenuOpen.set(true);
+         ctl.onDispose(() => isRemainingUsersMenuOpen.set(false));
+         return buildRemainingUsersList(ctl, usersObs);
+diff --git a/app/client/ui/ColumnFilterMenu.ts b/app/client/ui/ColumnFilterMenu.ts
+index 7892424aa..a09f79c50 100644
+--- a/app/client/ui/ColumnFilterMenu.ts
++++ b/app/client/ui/ColumnFilterMenu.ts
+@@ -42,6 +42,8 @@ import { decodeObject } from "app/plugin/objtypes";
+ 
+ import { Computed, dom, DomArg, DomElementArg, DomElementMethod, IDisposableOwner,
+   input, makeTestId, Observable, styled } from "grainjs";
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import concat from "lodash/concat";
+ import debounce from "lodash/debounce";
+ import identity from "lodash/identity";
+@@ -49,7 +51,7 @@ import noop from "lodash/noop";
+ import partition from "lodash/partition";
+ import some from "lodash/some";
+ import tail from "lodash/tail";
+-import { IOpenController, IPopupOptions, setPopupToCreateDom } from "popweasel";
++import { IOpenController, IPopupOptions } from "popweasel";
+ 
+ const t = makeT("ColumnFilterMenu");
+ 
+@@ -74,7 +76,7 @@ export type IColumnFilterViewType = "listView" | "calendarView";
+ /**
+  * Returns the DOM content for the column filter menu.
+  *
+- * For use with setPopupToCreateDom().
++ * For use with rtlSetPopupToCreateDom().
+  */
+ export function columnFilterMenu(owner: IDisposableOwner, opts: IFilterMenuOptions): HTMLElement {
+   const { model, doCancel, doSave, onClose, renderValue, valueParser, showAllFiltersButton,
+@@ -660,7 +662,7 @@ export interface ICreateFilterMenuParams extends IColumnFilterMenuOptions {
+ }
+ 
+ /**
+- * Returns content for the newly created columnFilterMenu; for use with setPopupToCreateDom().
++ * Returns content for the newly created columnFilterMenu; for use with rtlSetPopupToCreateDom().
+  */
+ export function createFilterMenu(params: ICreateFilterMenuParams) {
+   const {
+@@ -940,7 +942,7 @@ export function attachColumnFilterMenu(
+   return (elem) => {
+     const instance = filterInfo.viewSection.viewInstance();
+     if (instance?.createFilterMenu) { // Should be set if using BaseView
+-      setPopupToCreateDom(elem, ctl => instance.createFilterMenu(
++      rtlSetPopupToCreateDom(elem, ctl => instance.createFilterMenu(
+         ctl, filterInfo, filterMenuOptions), popupOptionsWithDefaults);
+     }
+   };
+diff --git a/app/client/ui/ColumnTitle.ts b/app/client/ui/ColumnTitle.ts
+index e50910a96..1ce3d7815 100644
+--- a/app/client/ui/ColumnTitle.ts
++++ b/app/client/ui/ColumnTitle.ts
+@@ -14,9 +14,11 @@ import { theme, vars } from "app/client/ui2018/cssVars";
+ import { icon } from "app/client/ui2018/icons";
+ import { menuCssClass } from "app/client/ui2018/menus";
+ 
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import { Computed, dom, IKnockoutReadObservable, makeTestId, Observable, styled } from "grainjs";
+ import * as ko from "knockout";
+-import { IOpenController, PopupControl, setPopupToCreateDom } from "popweasel";
++import { IOpenController, PopupControl } from "popweasel";
+ 
+ const testId = makeTestId("test-column-title-");
+ const t = makeT("ColumnTitle");
+@@ -57,7 +59,7 @@ export function buildRenameColumn(options: IColumnTitleOptions) {
+         }
+       }));
+     };
+-    setPopupToCreateDom(elem, ctl => buildColumnRenamePopup(ctl, options), {
++    rtlSetPopupToCreateDom(elem, ctl => buildColumnRenamePopup(ctl, options), {
+       placement: "bottom-start",
+       trigger: [trigger],
+       attach: "body",
+diff --git a/app/client/ui/NotifyUI.ts b/app/client/ui/NotifyUI.ts
+index e6af4d89c..d4f15916a 100644
+--- a/app/client/ui/NotifyUI.ts
++++ b/app/client/ui/NotifyUI.ts
+@@ -14,8 +14,10 @@ import { menuCssClass } from "app/client/ui2018/menus";
+ import { Memo, MemoKind } from "app/common/ACLPermissions";
+ import { commonUrls } from "app/common/gristUrls";
+ 
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import { dom, makeTestId, styled } from "grainjs";
+-import { cssMenu, defaultMenuOptions, IOpenController, setPopupToCreateDom } from "popweasel";
++import { cssMenu, defaultMenuOptions, IOpenController } from "popweasel";
+ 
+ const t = makeT("NotifyUI");
+ 
+@@ -166,7 +168,7 @@ export function buildNotifyMenuButton(notifier: Notifier, appModel: AppModel | n
+     cssHoverCircle({ style: `margin: 5px;` },
+       dom.domComputed(connectState, state => buildConnectStateButton(state)),
+       (elem) => {
+-        setPopupToCreateDom(elem, ctl => buildNotifyDropdown(ctl, notifier, appModel),
++        rtlSetPopupToCreateDom(elem, ctl => buildNotifyDropdown(ctl, notifier, appModel),
+           { ...defaultMenuOptions, placement: "bottom-end" });
+       },
+       hoverTooltip("Notifications", { key: "topBarBtnTooltip" }),
+diff --git a/app/client/ui/OnBoardingPopups.ts b/app/client/ui/OnBoardingPopups.ts
+index 36ada979a..77fea4082 100644
+--- a/app/client/ui/OnBoardingPopups.ts
++++ b/app/client/ui/OnBoardingPopups.ts
+@@ -23,7 +23,7 @@
+  */
+ 
+ import { FocusLayer } from "app/client/lib/FocusLayer";
+-import { makeT } from "app/client/lib/localization";
++import { isRtlInterface, makeT } from "app/client/lib/localization";
+ import * as Mousetrap from "app/client/lib/Mousetrap";
+ import { reportError } from "app/client/models/errors";
+ import { urlState } from "app/client/models/gristUrlState";
+@@ -33,6 +33,7 @@ import { theme, vars } from "app/client/ui2018/cssVars";
+ import { delay } from "app/common/delay";
+ import { IGristUrlState } from "app/common/gristUrls";
+ 
++import { rtlPlacement } from "app/client/lib/rtlPlacement";
+ import { createPopper, Placement } from "@popperjs/core";
+ import { Disposable, dom, DomElementArg, Holder, makeTestId, Observable, styled, svg } from "grainjs";
+ import range from "lodash/range";
+@@ -218,10 +219,13 @@ class OnBoardingPopupsCtl extends Disposable {
+     document.body.appendChild(content);
+     this._addFocusLayer(content);
+ 
+-    // Create a popper for positioning the popup content relative to the reference element
+-    const adjacentPadding = entry.cropPadding ? this._getAdjacentPadding(elem, placement) : 0;
++    // Create a popper for positioning the popup content relative to the reference element.
++    // The flip happens once and is shared by the padding measurement, so the padding is read
++    // from the side the popup actually ends up on.
++    const flipped = rtlPlacement(placement);
++    const adjacentPadding = entry.cropPadding ? this._getAdjacentPadding(elem, flipped) : 0;
+     const popper = createPopper(elem, content, {
+-      placement,
++      placement: flipped,
+       modifiers: [{
+         name: "arrow",
+         options: {
+@@ -295,8 +299,9 @@ class OnBoardingPopupsCtl extends Disposable {
+       ),
+       dom.onKeyDown({
+         Escape: () => this._finish(ctlIndex),
+-        ArrowLeft: () => this._move(-1),
+-        ArrowRight: () => this._move(+1),
++        // Arrows follow the reading direction; the flow of steps mirrors in RTL.
++        ArrowLeft: () => this._move(isRtlInterface() ? +1 : -1),
++        ArrowRight: () => this._move(isRtlInterface() ? -1 : +1),
+         Enter: () => this._move(+1, true),
+       }),
+     );
+diff --git a/app/client/ui/PagePanels.ts b/app/client/ui/PagePanels.ts
+index c956a279f..e807c31a6 100644
+--- a/app/client/ui/PagePanels.ts
++++ b/app/client/ui/PagePanels.ts
+@@ -1,7 +1,7 @@
+ import * as commands from "app/client/components/commands";
+ import { RegionFocusSwitcher } from "app/client/components/RegionFocusSwitcher";
+ import { watchElementForBlur } from "app/client/lib/FocusLayer";
+-import { makeT } from "app/client/lib/localization";
++import { isRtlInterface, makeT } from "app/client/lib/localization";
+ import { SessionObs } from "app/client/lib/sessionObs";
+ import { urlState } from "app/client/models/gristUrlState";
+ import { App } from "app/client/ui/App";
+@@ -307,13 +307,16 @@ export function pagePanels(page: PageContents) {
+             // the main pane slides over to make room for it, starting from under the panel.
+             const pinExpansion = () => {
+               pauseSavingLeft(false);
++              // The pane being pinned sits on the flow-start side; in an RTL layout that is margin-right.
++              const inlineMargin = isRtlInterface() ? "marginRight" : "marginLeft";
++              const inlineMarginCss = isRtlInterface() ? "margin-right" : "margin-left";
+               prepareForTransition(mainPaneDom, () => {
+-                mainPaneDom.style.marginLeft = `${leftCollapsedWidth.get() - left.panelWidth.get()}px`;
++                mainPaneDom.style[inlineMargin] = `${leftCollapsedWidth.get() - left.panelWidth.get()}px`;
+                 leftPaneDom.style.zIndex = "2";
+                 leftOverlap.set(false);
+               });
+-              mainPaneDom.style.transition = "margin-left 0.4s";
+-              mainPaneDom.style.marginLeft = "";
++              mainPaneDom.style.transition = `${inlineMarginCss} 0.4s`;
++              mainPaneDom.style[inlineMargin] = "";
+               const watcher = new TransitionWatcher(mainPaneDom);
+               watcher.onDispose(() => {
+                 mainPaneDom.style.transition = "";
+@@ -646,14 +649,14 @@ export const cssLeftPane = styled(cssVBox, `
+       z-index: 10;
+       top: 0;
+       bottom: ${bottomFooterHeightPx}px;
+-      left: -${240 + 15}px; /* adds an extra 15 pixels to also hide the box shadow */
++      inset-inline-start: -${240 + 15}px; /* adds an extra 15 pixels to also hide the box shadow */
+       visibility: hidden;
+       box-shadow: 10px 0 5px rgba(0, 0, 0, 0.2);
+-      transition: left 0.4s, visibility 0.4s;
+-      will-change: left;
++      transition: inset-inline-start 0.4s, visibility 0.4s;
++      will-change: inset-inline-start;
+     }
+     &-open {
+-      left: 0;
++      inset-inline-start: 0;
+       visibility: visible;
+     }
+   }
+@@ -693,7 +696,7 @@ const cssMainPane = styled(cssVBox, `
+   background-color: ${theme.mainPanelBg};
+   z-index: 1;
+   &-left-overlap {
+-    margin-left: 48px;
++    margin-inline-start: 48px;
+   }
+   @media ${mediaSmall} {
+     & {
+@@ -716,14 +719,14 @@ const cssRightPane = styled(cssVBox, `
+       z-index: 10;
+       top: 0;
+       bottom: ${bottomFooterHeightPx}px;
+-      right: -${240 + 15}px; /* adds an extra 15 pixels to also hide the box shadow */
++      inset-inline-end: -${240 + 15}px; /* adds an extra 15 pixels to also hide the box shadow */
+       box-shadow: -10px 0 5px rgba(0, 0, 0, 0.2);
+       visibility: hidden;
+-      transition: right 0.4s, visibility 0.4s;
+-      will-change: right;
++      transition: inset-inline-end 0.4s, visibility 0.4s;
++      will-change: inset-inline-end;
+     }
+     &-open {
+-      right: 0;
++      inset-inline-end: 0;
+       visibility: visible;
+     }
+   }
+@@ -793,14 +796,14 @@ const cssInnerLeftPane = styled(cssVBox, `
+       z-index: 10;
+       top: 0;
+       bottom: ${bottomFooterHeightPx}px;
+-      left: calc(-100vw - 15px);
++      inset-inline-start: calc(-100vw - 15px);
+       visibility: hidden;
+       box-shadow: 10px 0 5px rgba(0, 0, 0, 0.2);
+-      transition: left 0.4s, visibility 0.4s;
+-      will-change: left;
++      transition: inset-inline-start 0.4s, visibility 0.4s;
++      will-change: inset-inline-start;
+     }
+     &-open {
+-      left: 0;
++      inset-inline-start: 0;
+       visibility: visible;
+       width: 100vw;
+       min-width: 0;
+@@ -862,7 +865,7 @@ const cssResizeDisabledBorder = styled("div", `
+   position: absolute;
+   top: 0;
+   bottom: 0;
+-  right: -1px;
++  inset-inline-end: -1px;
+   z-index: 2;
+ `);
+ const cssPanelOpener = styled(icon, `
+diff --git a/app/client/ui/PageWidgetPicker.ts b/app/client/ui/PageWidgetPicker.ts
+index 81aa6b96c..da8725cbc 100644
+--- a/app/client/ui/PageWidgetPicker.ts
++++ b/app/client/ui/PageWidgetPicker.ts
+@@ -39,9 +39,11 @@ import {
+   select,
+   styled,
+ } from "grainjs";
++import { rtlPlacement, rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import without from "lodash/without";
+ import Popper from "popper.js";
+-import { IOpenController, popupOpen, setPopupToCreateDom } from "popweasel";
++import { IOpenController, popupOpen } from "popweasel";
+ 
+ const t = makeT("PageWidgetPicker");
+ 
+@@ -181,7 +183,7 @@ export function attachPageWidgetPicker(elem: HTMLElement, gristDoc: GristDoc, on
+   // code).
+   options.placement = "left";
+   const domCreator = (ctl: IOpenController) => buildPageWidgetPicker(ctl, gristDoc, onSave, options);
+-  setPopupToCreateDom(elem, domCreator, {
++  rtlSetPopupToCreateDom(elem, domCreator, {
+     placement: "left",
+     trigger: ["click"],
+     attach: "body",
+@@ -194,7 +196,7 @@ export function openPageWidgetPicker(elem: HTMLElement, gristDoc: GristDoc, onSa
+   options: IOptions = {}) {
+   popupOpen(elem, ctl => buildPageWidgetPicker(
+     ctl, gristDoc, onSave, options,
+-  ), { placement: "right" });
++  ), { placement: rtlPlacement("right") });
+ }
+ 
+ // Builds a picker to stick into the popup. Takes care of setting up the initial selected value and
+diff --git a/app/client/ui/RenameDocModal.ts b/app/client/ui/RenameDocModal.ts
+index b6115f620..08769160d 100644
+--- a/app/client/ui/RenameDocModal.ts
++++ b/app/client/ui/RenameDocModal.ts
+@@ -20,7 +20,9 @@ import {
+   Observable,
+   styled,
+ } from "grainjs";
+-import { defaultMenuOptions, setPopupToCreateDom } from "popweasel";
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
++import { defaultMenuOptions } from "popweasel";
+ 
+ const t = makeT("RenameDocModal");
+ 
+@@ -108,7 +110,7 @@ class RenameDocModal extends Disposable {
+             textButton(
+               cssIconAndLabel(icon("Pencil"), t("Choose color")),
+               (el) => {
+-                setPopupToCreateDom(
++                rtlSetPopupToCreateDom(
+                   el,
+                   ctl =>
+                     buildColorPicker(ctl, {
+@@ -134,7 +136,7 @@ class RenameDocModal extends Disposable {
+             textButton(
+               cssIconAndLabel(icon("Smiley"), t("Choose icon"), testId("choose-icon")),
+               (el) => {
+-                setPopupToCreateDom(
++                rtlSetPopupToCreateDom(
+                   el,
+                   (ctl) => {
+                     return cssEmojiPicker(
+diff --git a/app/client/ui/TopBar.ts b/app/client/ui/TopBar.ts
+index 4b59e833f..1e8c3f52f 100644
+--- a/app/client/ui/TopBar.ts
++++ b/app/client/ui/TopBar.ts
+@@ -209,7 +209,7 @@ function topBarUndoBtn(iconName: IconName, ...domArgs: DomElementArg[]): Element
+ const cssButtons = styled("div", `
+   display: flex;
+   gap: 8px;
+-  margin-right: 8px;
++  margin-inline-end: 8px;
+ `);
+ 
+ const cssTopBarUndoBtn = styled(cssTopBarBtn, `
+diff --git a/app/client/ui/TriggerFormulas.ts b/app/client/ui/TriggerFormulas.ts
+index aef7d332c..5661c7521 100644
+--- a/app/client/ui/TriggerFormulas.ts
++++ b/app/client/ui/TriggerFormulas.ts
+@@ -14,9 +14,11 @@ import { isEmptyList, RecalcWhen } from "app/common/gristTypes";
+ import { nativeCompare } from "app/common/gutil";
+ import { decodeObject, encodeObject } from "app/plugin/objtypes";
+ 
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import { Computed, dom, IDisposableOwner, MultiHolder, Observable, styled } from "grainjs";
+ import isEqual from "lodash/isEqual";
+-import { cssMenu, cssMenuItem, defaultMenuOptions, IOpenController, setPopupToCreateDom } from "popweasel";
++import { cssMenu, cssMenuItem, defaultMenuOptions, IOpenController } from "popweasel";
+ 
+ import type { ColumnRec } from "app/client/models/entities/ColumnRec";
+ import type { TableRec } from "app/client/models/entities/TableRec";
+@@ -124,7 +126,7 @@ export function buildFormulaTriggers(owner: MultiHolder, column: ColumnRec, opti
+           testId("field-triggers-select"),
+           dom.cls("disabled", use => !!options.disabled && use(options.disabled)),
+           (elem) => {
+-            setPopupToCreateDom(elem, ctl => buildTriggerSelectors(ctl, column.table.peek(), column, setRecalc),
++            rtlSetPopupToCreateDom(elem, ctl => buildTriggerSelectors(ctl, column.table.peek(), column, setRecalc),
+               { ...defaultMenuOptions, placement: "bottom-end" });
+           },
+         ),
+diff --git a/app/client/ui/WidgetTitle.ts b/app/client/ui/WidgetTitle.ts
+index 5a2127736..737e39d42 100644
+--- a/app/client/ui/WidgetTitle.ts
++++ b/app/client/ui/WidgetTitle.ts
+@@ -11,8 +11,10 @@ import { icon } from "app/client/ui2018/icons";
+ import { menuCssClass } from "app/client/ui2018/menus";
+ import { ModalControl } from "app/client/ui2018/modals";
+ 
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import { Computed, dom, DomElementArg, makeTestId, Observable, styled } from "grainjs";
+-import { IOpenController, IPopupOptions, PopupControl, setPopupToCreateDom } from "popweasel";
++import { IOpenController, IPopupOptions, PopupControl } from "popweasel";
+ 
+ const testId = makeTestId("test-widget-title-");
+ const t = makeT("WidgetTitle");
+@@ -105,7 +107,7 @@ function buildRenamableTitle(
+             }));
+           });
+         }
+-        setPopupToCreateDom(elem, (ctl) => {
++        rtlSetPopupToCreateDom(elem, (ctl) => {
+           if (isEditing) {
+             ctl.onDispose(() => isEditing.set(false));
+           }
+diff --git a/app/client/ui/searchDropdown.ts b/app/client/ui/searchDropdown.ts
+index d9f9690c6..870f335bf 100644
+--- a/app/client/ui/searchDropdown.ts
++++ b/app/client/ui/searchDropdown.ts
+@@ -10,9 +10,11 @@ import { theme, vars } from "app/client/ui2018/cssVars";
+ import { icon } from "app/client/ui2018/icons";
+ import { menuDivider } from "app/client/ui2018/menus";
+ 
++import { rtlSetPopupToFunc } from "app/client/lib/rtlPlacement";
++
+ import { Disposable, dom, DomElementMethod, IOptionFull, makeTestId, Observable, styled } from "grainjs";
+ import mergeWith from "lodash/mergeWith";
+-import { cssMenuItem, defaultMenuOptions, IOpenController, IPopupOptions, setPopupToFunc } from "popweasel";
++import { cssMenuItem, defaultMenuOptions, IOpenController, IPopupOptions } from "popweasel";
+ 
+ const t = makeT("searchDropdown");
+ 
+@@ -82,7 +84,7 @@ export function dropdownWithSearch<T>(options: IDropdownWithSearchOptions<T>): D
+       {}, defaultMenuOptions, options.popupOptions,
+       (_objValue: any, srcValue: any) => Array.isArray(srcValue) ? srcValue : undefined,
+     );
+-    setPopupToFunc(
++    rtlSetPopupToFunc(
+       elem,
+       ctl => (DropdownWithSearch<T>).create(null, ctl, options),
+       popupOptions,
+diff --git a/app/client/ui/tooltips.ts b/app/client/ui/tooltips.ts
+index b405b12f0..238e6dae2 100644
+--- a/app/client/ui/tooltips.ts
++++ b/app/client/ui/tooltips.ts
+@@ -5,6 +5,7 @@
+  * - to be shown briefly, as a transient notification next to some action element.
+  */
+ 
++import { rtlPlacement, rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
+ import { logTelemetryEvent } from "app/client/lib/telemetry";
+ import { GristTooltips, Tooltip } from "app/client/ui/GristTooltips";
+ import { prepareForTransition } from "app/client/ui/transitions";
+@@ -17,7 +18,7 @@ import { tokens } from "app/common/ThemePrefs";
+ import { BindableValue, dom, DomContents, DomElementArg, DomElementMethod, Observable, styled } from "grainjs";
+ import merge from "lodash/merge";
+ import Popper from "popper.js";
+-import { cssMenu, cssMenuItem, defaultMenuOptions, IPopupOptions, setPopupToCreateDom } from "popweasel";
++import { cssMenu, cssMenuItem, defaultMenuOptions, IPopupOptions } from "popweasel";
+ 
+ export interface ITipOptions {
+   /**
+@@ -130,7 +131,7 @@ export function showTransientTooltip(
+ export function showTooltip(
+   refElem: Element, tipContent: ITooltipContentFunc, options: ITipOptions = {},
+ ): ITooltipControl {
+-  const placement: Popper.Placement = options.placement ?? "top";
++  const placement: Popper.Placement = rtlPlacement(options.placement ?? "top");
+   const key = options.key;
+   const hasKey = key && openTooltips.has(key);
+   let closed = false;
+@@ -371,7 +372,7 @@ function buildClickableInfoTooltip(
+   return dom.domComputed(tooltip, tip =>
+     cssInfoTooltipButton("?",
+       (elem) => {
+-        setPopupToCreateDom(
++        rtlSetPopupToCreateDom(
+           elem,
+           (ctl) => {
+             logTelemetryEvent("viewedTip", { full: { tipName: tip } });
+diff --git a/app/client/ui2018/ColorSelect.ts b/app/client/ui2018/ColorSelect.ts
+index 533ac37ff..c2e142c1d 100644
+--- a/app/client/ui2018/ColorSelect.ts
++++ b/app/client/ui2018/ColorSelect.ts
+@@ -9,8 +9,10 @@ import { gristFloatingMenuClass } from "app/client/ui2018/menus";
+ import { cssSelectBtn } from "app/client/ui2018/select";
+ import { isValidHex } from "app/common/gutil";
+ 
++import { rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
++
+ import { BindableValue, Computed, Disposable, dom, DomElementArg, Observable, onKeyDown, styled } from "grainjs";
+-import { defaultMenuOptions, IOpenController, setPopupToCreateDom } from "popweasel";
++import { defaultMenuOptions, IOpenController } from "popweasel";
+ 
+ const t = makeT("ColorSelect");
+ 
+@@ -104,7 +106,7 @@ export function colorSelect(
+     onOpen?.();
+     return buildColorPicker(ctl, { styleOptions, onSave, onRevert });
+   };
+-  setPopupToCreateDom(selectBtn, domCreator, { ...defaultMenuOptions, placement: "bottom-end" });
++  rtlSetPopupToCreateDom(selectBtn, domCreator, { ...defaultMenuOptions, placement: "bottom-end" });
+ 
+   return selectBtn;
+ }
+@@ -141,7 +143,7 @@ export function colorButton(options: ColorButtonOptions): Element {
+ 
+   const domCreator = (ctl: IOpenController) =>
+     buildColorPicker(ctl, colorPickerOptions, colorPickerDomArgs);
+-  setPopupToCreateDom(iconBtn, domCreator, { ...defaultMenuOptions, placement: "bottom-end" });
++  rtlSetPopupToCreateDom(iconBtn, domCreator, { ...defaultMenuOptions, placement: "bottom-end" });
+ 
+   return iconBtn;
+ }
+diff --git a/app/client/ui2018/IconList.ts b/app/client/ui2018/IconList.ts
+index ae6faf141..aa3197915 100644
+--- a/app/client/ui2018/IconList.ts
++++ b/app/client/ui2018/IconList.ts
+@@ -72,6 +72,7 @@ export const IconList = [
+   "Empty",
+   "Exclamation",
+   "Expand",
++  "ExpandArrows",
+   "EyeHide",
+   "EyeShow",
+   "Feedback",
+@@ -176,7 +177,7 @@ export const IconList = [
+   "UseOther",
+   "UseProduct",
+   "UseSales",
+-  "UseScience",
++  "UseScience"
+ ] as const;
+ 
+ export type IconName = (typeof IconList)[number];
+diff --git a/app/client/ui2018/ariaTabs.ts b/app/client/ui2018/ariaTabs.ts
+index 31060eaa4..29c20a2a7 100644
+--- a/app/client/ui2018/ariaTabs.ts
++++ b/app/client/ui2018/ariaTabs.ts
+@@ -1,3 +1,5 @@
++import { isRtlInterface } from "app/client/lib/localization";
++
+ import { dom, DomContents, Observable } from "grainjs";
+ 
+ /**
+@@ -54,8 +56,9 @@ export const ariaTab = (tabListId: string, tabId: string, state: Observable<stri
+     dom.on("click", () => state.set(tabId)),
+     dom.onKeyDown({
+       // Only horizontal tabs are currently implemented.
+-      ArrowLeft: event => cycle(event.target, state, -1),
+-      ArrowRight: event => cycle(event.target, state, 1),
++      // Arrows follow the visual direction; the tab order in an RTL document runs right-to-left.
++      ArrowLeft: event => cycle(event.target, state, isRtlInterface() ? 1 : -1),
++      ArrowRight: event => cycle(event.target, state, isRtlInterface() ? -1 : 1),
+     }),
+   ];
+ };
+diff --git a/app/client/ui2018/menus.ts b/app/client/ui2018/menus.ts
+index cfb42212f..b2b9c52ef 100644
+--- a/app/client/ui2018/menus.ts
++++ b/app/client/ui2018/menus.ts
+@@ -1,8 +1,9 @@
+ import { MenuCommand } from "app/client/components/commandList";
+ import { FocusLayer } from "app/client/lib/FocusLayer";
+-import { makeT } from "app/client/lib/localization";
++import { isRtlInterface, makeT } from "app/client/lib/localization";
+ import { testPendingMenuActions } from "app/client/lib/testPendingOps";
+ import { NeedUpgradeError, reportError } from "app/client/models/errors";
++import { rtlPlacement, rtlSetPopupToCreateDom } from "app/client/lib/rtlPlacement";
+ import { textButton } from "app/client/ui2018/buttons";
+ import { cssCheckboxSquare, cssLabel, cssLabelText } from "app/client/ui2018/checkbox";
+ import { testId, theme, vars } from "app/client/ui2018/cssVars";
+@@ -21,6 +22,15 @@ import { uniqueId } from "underscore";
+ 
+ const t = makeT("menus");
+ 
++// Popweasel's select() and autocomplete() do not accept an anchor: they pin popper's shared
++// default (bottom-start, which in an RTL interface anchors to the physical left edge). Mirror
++// the shared default once here. Every menu this module builds passes an explicit placement
++// (already mirrored) to weasel, so the flip is not applied twice to it. The guard keeps a
++// re-evaluation from flipping it back.
++if (isRtlInterface() && weasel.defaultMenuOptions.placement === "bottom-start") {
++  weasel.defaultMenuOptions.placement = rtlPlacement(weasel.defaultMenuOptions.placement);
++}
++
+ export interface IOptionFull<T> {
+   value: T;
+   label: string;
+@@ -51,7 +61,10 @@ export function menu(createFunc: weasel.MenuCreateFunc, options?: weasel.IMenuOp
+     registerMenuOpen(ctl);
+     return createFunc(ctl);
+   };
+-  return weasel.menu(wrappedCreateFunc, { ...defaults, ...options });
++  const opts: weasel.IMenuOptions = { ...defaults, ...options };
++  // Popper does not know which way the interface reads; mirror the anchor for RTL.
++  opts.placement = rtlPlacement(opts.placement ?? "bottom-start");
++  return weasel.menu(wrappedCreateFunc, opts);
+ }
+ 
+ export interface SearchableMenuOptions {
+@@ -137,14 +150,18 @@ export function menuItemSubmenu(
+   options: ISubMenuOptions,
+   ...args: DomElementArg[]
+ ): Element {
++  const submenuOptions: ISubMenuOptions = {
++    // A submenu opens towards the direction of writing: to the left in an RTL interface.
++    placement: "right-start",
++    ...defaults,
++    expandIcon: () => cssExpandIcon("Expand"),
++    menuCssClass: `${cssSubMenuElem.className} ${defaults.menuCssClass}`,
++    ...options,
++  };
++  submenuOptions.placement = rtlPlacement(submenuOptions.placement);
+   return weasel.menuItemSubmenu(
+     submenu,
+-    {
+-      ...defaults,
+-      expandIcon: () => cssExpandIcon("Expand"),
+-      menuCssClass: `${cssSubMenuElem.className} ${defaults.menuCssClass}`,
+-      ...options,
+-    },
++    submenuOptions,
+     dom.cls(cssMenuItemSubmenu.className),
+     ...args,
+   );
+@@ -177,7 +194,7 @@ export const cssEllipsisLabel = styled("div", `
+ 
+ export const cssExpandIcon = styled(icon, `
+   position: absolute;
+-  right: 4px;
++  inset-inline-end: 4px;
+ `);
+ 
+ const cssSubMenuElem = styled("div", `
+@@ -431,7 +448,8 @@ export function multiSelect<T>(selectedOptions: MutableObsArray<T>,
+     ),
+     icon("Dropdown"),
+     (elem) => {
+-      weasel.setPopupToCreateDom(elem, ctl => buildMultiSelectMenu(ctl), weasel.defaultMenuOptions);
++      // Pin the un-mirrored anchor: rtlSetPopupToCreateDom mirrors it once here.
++      rtlSetPopupToCreateDom(elem, ctl => buildMultiSelectMenu(ctl), { ...weasel.defaultMenuOptions, placement: "bottom-start" });
+     },
+     dom.style("border", (use) => {
+       return options.error && use(options.error) ?
+@@ -487,11 +505,13 @@ export function inputMenu(createFunc: weasel.MenuCreateFunc, options?: weasel.IM
+       }
+     });
+   }
+-  return weasel.inputMenu(createFunc, {
++  const opts: weasel.IMenuOptions = {
+     trigger: [inputTrigger],
+     menuCssClass: `${cssMenuElem.className} ${cssInputButtonMenuElem.className}`,
+     ...options,
+-  });
++  };
++  opts.placement = rtlPlacement(opts.placement ?? "bottom-start");
++  return weasel.inputMenu(createFunc, opts);
+ }
+ 
+ // A menu item that leads to the billing page if the desired operation requires an upgrade.
+@@ -574,7 +594,9 @@ export function listOfMenuItems(items: () => DomElementArg[]) {
+   return menu(
+     items,
+     {
++      // Pin the un-mirrored anchor: menu() mirrors it once here.
+       ...weasel.defaultMenuOptions,
++      placement: "bottom-start",
+       menuCssClass: _menu.className + " " + gristFloatingMenuClass,
+       menuWrapCssClass: cssMenuWrapElem.className,
+       stretchToSelector: `.${cssSelectBtn.className}`,
+@@ -731,7 +753,7 @@ export const menuDivider = styled(weasel.cssMenuDivider, `
+ 
+ export const menuIcon = styled(icon, `
+   flex: none;
+-  margin-right: 8px;
++  margin-inline-end: 8px;
+ `);
+ 
+ const cssSelectMenuElem = styled(cssMenuElem, `
+@@ -781,15 +803,15 @@ export const cssOptionRow = styled("span", `
+ const cssOptionRowLoadingSpinner = styled("div", `
+   display: flex;
+   align-items: center;
+-  margin-left: 8px;
++  margin-inline-start: 8px;
+ `);
+ 
+ export const cssOptionRowIcon = styled(icon, `
+   height: 16px;
+   width: 16px;
+   background-color: var(--icon-color, ${theme.menuItemIconFg});
+-  margin: -3px 8px 0 2px;
+-  margin: 0 8px 0 0;
++  margin: 0;
++  margin-inline-end: 8px;
+   flex: none;
+ 
+   .${weasel.cssMenuItem.className}-sel & {
+@@ -832,7 +854,7 @@ const cssInlineCollapseIcon = styled(icon, `
+ 
+ const cssCollapseIcon = styled(icon, `
+   position: absolute;
+-  right: 12px;
++  inset-inline-end: 12px;
+   top: calc(50% - 8px);
+   pointer-events: none;
+   background-color: ${theme.selectButtonFg};
+@@ -857,9 +879,9 @@ export const cssMenuItemCmd = styled("div", `
+ `);
+ 
+ export const cssCmdKey = styled("span", `
+-  margin-left: 16px;
++  margin-inline-start: 16px;
+   color: ${theme.menuItemIconFg};
+-  margin-right: -12px;
++  margin-inline-end: -12px;
+ 
+   .${weasel.cssMenuItem.className}-sel > & {
+     color: ${theme.menuItemIconSelectedFg};
+@@ -877,7 +899,7 @@ const cssAnnotateMenuItem = styled("span", `
+   font-size: 8px;
+   vertical-align: super;
+   margin-top: -4px;
+-  margin-left: 4px;
++  margin-inline-start: 4px;
+   font-weight: bold;
+ 
+   .${weasel.cssMenuItem.className}-sel > & {
+@@ -911,7 +933,7 @@ const cssCheckboxLabel = styled(cssLabel, `
+ `);
+ 
+ const cssCheckboxText = styled(cssLabelText, `
+-  margin-right: 12px;
++  margin-inline-end: 12px;
+   color: ${theme.text};
+   white-space: pre;
+ `);
+diff --git a/app/client/ui2018/modals.ts b/app/client/ui2018/modals.ts
+index 835dc60d7..371b24505 100644
+--- a/app/client/ui2018/modals.ts
++++ b/app/client/ui2018/modals.ts
+@@ -1,4 +1,5 @@
+ import { FocusLayer } from "app/client/lib/FocusLayer";
++import { rtlPlacement } from "app/client/lib/rtlPlacement";
+ import { enableTabTrap, kbFocusHighlighterClass, lockFocusUntilRemoved } from "app/client/lib/focusUtils";
+ import { makeT } from "app/client/lib/localization";
+ import { reportError } from "app/client/models/errors";
+@@ -588,6 +589,8 @@ export function modalTooltip(
+   domCreator: (ctl: IOpenController) => DomElementArg,
+   options: IPopupOptions = {},
+ ): PopupControl {
++  const opts = { ...options };
++  if (opts.placement) { opts.placement = rtlPlacement(opts.placement); }
+   return popupOpen(reference, (ctl: IOpenController) => {
+     const element = cssModalTooltip(
+       lockFocusUntilRemoved(ctl),
+@@ -595,7 +598,7 @@ export function modalTooltip(
+       { "role": "dialog", "aria-modal": "true" },
+     );
+     return element;
+-  }, options);
++  }, opts);
+ }
+ 
+ /* CSS styled components */
+diff --git a/app/client/widgets/AttachmentsEditor.ts b/app/client/widgets/AttachmentsEditor.ts
+index ace277b4e..d9b59a8d1 100644
+--- a/app/client/widgets/AttachmentsEditor.ts
++++ b/app/client/widgets/AttachmentsEditor.ts
+@@ -3,7 +3,7 @@
+ // Grist client libs
+ import { DocComm } from "app/client/components/DocComm";
+ import { FocusLayer } from "app/client/lib/FocusLayer";
+-import { makeT } from "app/client/lib/localization";
++import { isRtlInterface, makeT } from "app/client/lib/localization";
+ import { checkBrowserUploadSizeLimit, selectPicker } from "app/client/lib/uploads";
+ import { DocData } from "app/client/models/DocData";
+ import { MetaTableData } from "app/client/models/TableData";
+@@ -120,8 +120,9 @@ export class AttachmentsEditor extends NewBaseEditor {
+         dom.onKeyDown({
+           Enter: (ev) => { ctl.close(); this.options.commands.fieldEditSaveHere(); },
+           Escape: (ev) => { ctl.close(); this.options.commands.fieldEditCancel(); },
+-          ArrowLeft$: ev => !isInEditor(ev) && this._moveIndex(-1),
+-          ArrowRight$: ev => !isInEditor(ev) && this._moveIndex(1),
++          // The strip flows with the text direction; in RTL the visual right walks the index down.
++          ArrowLeft$: ev => !isInEditor(ev) && this._moveIndex(isRtlInterface() ? 1 : -1),
++          ArrowRight$: ev => !isInEditor(ev) && this._moveIndex(isRtlInterface() ? -1 : 1),
+         }),
+         // Close if clicking into the background. (The default modal's behavior for this isn't
+         // triggered because our content covers the whole screen.)
 diff --git a/app/client/widgets/DateEditor.ts b/app/client/widgets/DateEditor.ts
-index 49b75d2..734bf9a 100644
+index 49b75d29f..734bf9a1f 100644
 --- a/app/client/widgets/DateEditor.ts
 +++ b/app/client/widgets/DateEditor.ts
 @@ -1,9 +1,20 @@
@@ -362,7 +2052,7 @@ index 49b75d2..734bf9a 100644
  
    // Attach the datepicker.
 diff --git a/app/client/widgets/DateTextBox.js b/app/client/widgets/DateTextBox.js
-index fc7ed421c..58c6af5a4 100644
+index fc7ed42..58c6af5 100644
 --- a/app/client/widgets/DateTextBox.js
 +++ b/app/client/widgets/DateTextBox.js
 @@ -14,6 +14,10 @@ const {cssTextInput} = require("app/client/ui2018/editableLabel");
@@ -449,7 +2139,7 @@ index fc7ed421c..58c6af5a4 100644
    return dom("div",
      this.buildDateConfigDom(),
 diff --git a/app/client/widgets/DateTimeEditor.ts b/app/client/widgets/DateTimeEditor.ts
-index d83abe2..d8466f0 100644
+index d83abe284..d8466f028 100644
 --- a/app/client/widgets/DateTimeEditor.ts
 +++ b/app/client/widgets/DateTimeEditor.ts
 @@ -95,6 +95,7 @@ export class DateTimeEditor extends DateEditor {
@@ -460,8 +2150,69 @@ index d83abe2..d8466f0 100644
      });
      return timestamp !== null ? timestamp :
        (date && time ? `${date} ${time}` : date || time);
+diff --git a/app/client/widgets/Reference.ts b/app/client/widgets/Reference.ts
+index 2e4b197d0..f7f5e9221 100644
+--- a/app/client/widgets/Reference.ts
++++ b/app/client/widgets/Reference.ts
+@@ -180,9 +180,10 @@ export class Reference extends NTextBox {
+ }
+ 
+ const cssRefIcon = styled(icon, `
+-  float: left;
++  float: inline-start;
+   --icon-color: ${theme.lightText};
+-  margin: -1px 2px 2px 0;
++  margin: -1px 0 2px;
++  margin-inline-end: 2px;
+ 
+   &-view-as-card {
+     cursor: pointer;
+diff --git a/app/client/widgets/ReferenceEditor.ts b/app/client/widgets/ReferenceEditor.ts
+index 508c84caa..6d557f8be 100644
+--- a/app/client/widgets/ReferenceEditor.ts
++++ b/app/client/widgets/ReferenceEditor.ts
+@@ -152,7 +152,7 @@ export function renderACItem(text: string, highlightFunc: HighlightFunc, isAddNe
+ 
+ const cssRefEditor = styled("div", `
+   & > .celleditor_text_editor, & > .celleditor_content_measure {
+-    padding-left: 18px;
++    padding-inline-start: 18px;
+   }
+ `);
+ 
+@@ -225,7 +225,7 @@ const cssRefEditIcon = styled(icon, `
+   background-color: ${theme.lightText};
+   position: absolute;
+   top: 0;
+-  left: 0;
++  inset-inline-start: 0;
+   margin: 3px 3px 0 3px;
+ `);
+ 
+diff --git a/app/client/widgets/ReferenceList.ts b/app/client/widgets/ReferenceList.ts
+index cb0bd6bc9..66381db14 100644
+--- a/app/client/widgets/ReferenceList.ts
++++ b/app/client/widgets/ReferenceList.ts
+@@ -126,7 +126,7 @@ const cssRefIcon = styled(icon, `
+   --icon-color: ${theme.lightText};
+   flex-shrink: 0;
+   position: absolute;
+-  left: 4px;
++  inset-inline-start: 4px;
+ 
+   &-view-as-card {
+     cursor: pointer;
+@@ -138,7 +138,7 @@ const cssRefIcon = styled(icon, `
+ 
+ const cssRefIconAndLabel = styled("div", `
+   position: relative;
+-  padding-left: 20px;
++  padding-inline-start: 20px;
+ `);
+ 
+ const cssLabel = styled("div", `
 diff --git a/app/client/widgets/UserType.ts b/app/client/widgets/UserType.ts
-index 0cc95e4..fc59d06 100644
+index 0cc95e429..fc59d0656 100644
 --- a/app/client/widgets/UserType.ts
 +++ b/app/client/widgets/UserType.ts
 @@ -165,6 +165,8 @@ export const typeDefs: any = {
@@ -482,7 +2233,7 @@ index 0cc95e4..fc59d06 100644
        },
      },
 diff --git a/app/common/ValueFormatter.ts b/app/common/ValueFormatter.ts
-index 05365ad..e4b3db7 100644
+index 05365adf2..e4b3db7ce 100644
 --- a/app/common/ValueFormatter.ts
 +++ b/app/common/ValueFormatter.ts
 @@ -7,6 +7,7 @@ import { getReferencedTableId, isList } from "app/common/gristTypes";
@@ -539,8 +2290,138 @@ index 05365ad..e4b3db7 100644
      return time.format(this._dateTimeFormat);
    }
  }
+diff --git a/app/common/ValueGuesser.ts b/app/common/ValueGuesser.ts
+index c505b19a0..650dec003 100644
+--- a/app/common/ValueGuesser.ts
++++ b/app/common/ValueGuesser.ts
+@@ -5,7 +5,12 @@ import { isObject } from "app/common/gristTypes";
+ import { countIf } from "app/common/gutil";
+ import { NumberFormatOptions } from "app/common/NumberFormat";
+ import NumberParse from "app/common/NumberParse";
+-import { dateTimeWidgetOptions, guessDateFormat } from "app/common/parseDate";
++import {
++  jalaliDateStringToGregorian,
++  shouldUseJalali,
++  toLatinDigits,
++} from "app/common/jalali";
++import { dateTimeWidgetOptions, guessDateFormat, guessDateFormats, parseDateStrict, parseDateTime } from "app/common/parseDate";
+ import { MetaRowRecord } from "app/common/TableData";
+ import { createFormatter } from "app/common/ValueFormatter";
+ import { createParserRaw, ValueParser } from "app/common/ValueParser";
+@@ -135,18 +140,21 @@ class NumericGuesser extends ValueGuesser<number> {
+ 
+   protected isEqualFormatted(formatted1: string, formatted2: string): boolean {
+     // Consider format guessing successful if it returns the typed-in numeric value exactly or
+-    // differing only in whitespace.
+-    formatted1 = formatted1.replace(NumberParse.removeCharsRegex, "");
+-    formatted2 = formatted2.replace(NumberParse.removeCharsRegex, "");
+-    return formatted1 === formatted2;
++    // differing only in whitespace; digits are compared in Latin, so that a Persian-digit
++    // rendering of what the user typed in Latin digits still counts as a match.
++    const strip = (s: string) => toLatinDigits(s).replace(NumberParse.removeCharsRegex, "");
++    return strip(formatted1) === strip(formatted2);
+   }
+ }
+ 
+ class DateGuesser extends ValueGuesser<number> {
++  private _jalali: boolean;
++
+   // _format should be a full moment format string
+   // _tz should be the document's default timezone
+-  constructor(private _format: string, private _tz: string) {
++  constructor(private _format: string, private _tz: string, docSettings?: DocumentSettings) {
+     super();
++    this._jalali = shouldUseJalali(null, docSettings?.locale);
+   }
+ 
+   public colInfo(): GuessedColInfo {
+@@ -164,9 +172,66 @@ class DateGuesser extends ValueGuesser<number> {
+   // Note that this parsing is much stricter than parseDate to prevent loss of information.
+   // Dates which can be parsed by parseDate based on the guessed widget options may not be parsed here.
+   public parse(value: string): number | string {
++    if (this._jalali) {
++      return this._parseJalali(value) ?? value;
++    }
+     const m = moment.tz(value, this._format, true, this._tz);
+     return m.isValid() ? m.valueOf() / 1000 : value;
+   }
++
++  protected isEqualFormatted(formatted1: string, formatted2: string): boolean {
++    if (this._jalali) {
++      // A Persian rendering writes its digits in Persian; compare them in Latin digits, and
++      // ignore any bidi control marks copied along with the text.
++      const strip = (s: string) => toLatinDigits(s).replace(/[\u200e\u200f\u202a-\u202e]/g, "").trim();
++      return strip(formatted1) === strip(formatted2);
++    }
++    return super.isEqualFormatted(formatted1, formatted2);
++  }
++
++  /**
++   * Reads a Jalali date typed in the column's guessed format. The value stored is an ordinary
++   * timestamp, so the Jalali layer only has to produce the Gregorian equivalent for the rest of
++   * the pipeline to work with.
++   */
++  private _parseJalali(value: string): number | null {
++    const iso = jalaliDateStringToGregorian(value, this._format);
++    if (iso === null) {
++      return null;
++    }
++    const hasTime = /\d{1,2}:\d{2}/.test(iso);
++    if (hasTime) {
++      const ts = parseDateTime(iso, { timezone: this._tz });
++      return ts === undefined ? null : ts;
++    }
++    // Dates store UTC midnight, matching how DateParser and the Date formatter work.
++    return parseDateStrict(iso, "YYYY-MM-DD", undefined, "UTC") ?? null;
++  }
++}
++
++// The same invisible marks parseJalaliDateString tolerates. moment trips over them.
++const BIDI_CONTROL_RE = /[\u061C\u200B\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
++
++/**
++ * The format to offer as a Jalali guess. moment-guess works out the positions of the numbers
++ * without caring which calendar they belong to, and Persian readers write the day before the
++ * month, so among equally good candidates prefer a day-first format (or a year-first one) over
++ * month-first.
++ */
++function guessJalaliDateFormat(values: (string | null)[], timezone: string): string {
++  // moment only reads Latin digits and trips over bidi control marks, so the guess is made from
++  // normalized copies. The values themselves flow on untouched: NumberParse knows Persian digits
++  // and digit-groups of its own, and the date comparisons happen in Latin digits anyway.
++  const normalized = values.map(
++    v => (typeof v === "string" && v ? toLatinDigits(v).replace(BIDI_CONTROL_RE, "") : v));
++  const formats = guessDateFormats(normalized, timezone);
++  if (!formats) {
++    return "YYYY-MM-DD";
++  }
++  // Formats are sorted lexicographically; a year-first one is unambiguous and stays as it is, and
++  // so does a day-before-month one. Otherwise pick the first day-first candidate.
++  const preferred = formats.find(f => f.startsWith("Y") || f.indexOf("D") < f.indexOf("M"));
++  return preferred ?? formats[formats.length - 1];
+ }
+ 
+ export function guessColInfoWithDocData(values: (string | null)[], docData: DocData) {
+@@ -178,6 +243,8 @@ export function guessColInfo(
+ ): GuessResult {
+   // Use short-circuiting of || to only do as much work as needed,
+   // in particular not guessing date formats before trying other types.
++  const jalali = shouldUseJalali(null, docSettings.locale);
++  const dateFormat = jalali ? guessJalaliDateFormat(values, timezone) : guessDateFormat(values, timezone);
+   return (
+     new BoolGuesser()
+       .guess(values, docSettings) ||
+@@ -186,7 +253,7 @@ export function guessColInfo(
+         NumberParse.fromSettings(docSettings).guessOptions(values),
+       )
+         .guess(values, docSettings) ||
+-        new DateGuesser(guessDateFormat(values, timezone), timezone)
++        new DateGuesser(dateFormat, timezone, docSettings)
+           .guess(values, docSettings) ||
+     // Don't return the same values back if there's no conversion to be done,
+     // as they have to be serialized and transferred over a pipe to Python.
 diff --git a/app/common/WidgetOptions.ts b/app/common/WidgetOptions.ts
-index dc0dc9f..c835909 100644
+index dc0dc9f09..c83590920 100644
 --- a/app/common/WidgetOptions.ts
 +++ b/app/common/WidgetOptions.ts
 @@ -6,6 +6,8 @@ export interface WidgetOptions extends NumberFormatOptions {
@@ -553,7 +2434,7 @@ index dc0dc9f..c835909 100644
    choices?: string[];
  }
 diff --git a/app/common/parseDate.ts b/app/common/parseDate.ts
-index 4543c09..d6757a7 100644
+index 4543c09b5..d6757a7af 100644
 --- a/app/common/parseDate.ts
 +++ b/app/common/parseDate.ts
 @@ -1,4 +1,5 @@
@@ -615,7 +2496,7 @@ index 4543c09..d6757a7 100644
      const m = moment.tz(cleanDate, format, true, timezone);
      if (m.isValid()) {
 diff --git a/app/server/lib/sendAppPage.ts b/app/server/lib/sendAppPage.ts
-index cd4e912..e1e120a 100644
+index cd4e91262..e1e120aa5 100644
 --- a/app/server/lib/sendAppPage.ts
 +++ b/app/server/lib/sendAppPage.ts
 @@ -16,6 +16,8 @@ import {
@@ -674,8 +2555,20 @@ index cd4e912..e1e120a 100644
  interface LogVisitedPageEventOptions {
    server: GristServer;
    pagePath: string;
+diff --git a/assets/locales/en.client.json b/assets/locales/en.client.json
+index 986a19d3a..12dc39b84 100644
+--- a/assets/locales/en.client.json
++++ b/assets/locales/en.client.json
+@@ -1658,6 +1658,7 @@
+     },
+     "GridView": {
+         "Click to insert": "Click to insert",
++    "View record as card": "View record as card",
+         "ID": "ID",
+         "row {{rowNum}} {{colName}}": "row {{rowNum}} {{colName}}",
+         "row {{rowNum}} {{colName}} (new row)": "row {{rowNum}} {{colName}} (new row)"
 diff --git a/assets/locales/fa.client.json b/assets/locales/fa.client.json
-index 058b342..413d6d8 100644
+index 058b3425d..0a70ba871 100644
 --- a/assets/locales/fa.client.json
 +++ b/assets/locales/fa.client.json
 @@ -1,18 +1,31 @@
@@ -732,7 +2625,7 @@ index 058b342..413d6d8 100644
      "Seed rules": "قواعد دانه(Seed)",
      "Allow everyone to copy the entire document, or view it in full in fiddle mode.\nUseful for examples and templates, but not for sensitive data.": "به همه اجازه دهید کل سند را کپی کنند، یا آن را به صورت کامل در حالت ور رفتن مشاهده کنند.\nمفید برای نمونه‌ها و قالب‌ها، اما نه برای داده‌های حساس.",
      "Lookup Column": "جستجوی ستون",
-@@ -44,9 +52,1799 @@
+@@ -44,9 +52,1800 @@
      "Permission to edit document structure": "اجازه‌ی ویرایش ساختار سند",
      "Add table-wide rule": "افزودن قانون سراسری جدول"
    },
@@ -1593,7 +3486,8 @@ index 058b342..413d6d8 100644
 +    "row numbers": "شماره ردیف‌ها"
 +  },
 +  "GridView": {
-+    "ID": "شناسه"
++    "ID": "شناسه",
++    "View record as card": "مشاهدهٔ رکورد به صورت کارت"
 +  },
 +  "GridViewMenus": {
 +    "Add column": "افزودن ستون",
@@ -2537,7 +4431,7 @@ index 058b342..413d6d8 100644
 +}
 \ No newline at end of file
 diff --git a/assets/locales/fa.server.json b/assets/locales/fa.server.json
-index 0967ef4..59b3595 100644
+index 0967ef424..59b35952b 100644
 --- a/assets/locales/fa.server.json
 +++ b/assets/locales/fa.server.json
 @@ -1 +1,25 @@
@@ -2568,8 +4462,271 @@ index 0967ef4..59b3595 100644
 +  }
 +}
 \ No newline at end of file
+diff --git a/sandbox/grist/functions/date.py b/sandbox/grist/functions/date.py
+index 3b557cac3..5560d5a63 100644
+--- a/sandbox/grist/functions/date.py
++++ b/sandbox/grist/functions/date.py
+@@ -5,12 +5,55 @@ import dateutil.parser
+ 
+ import moment
+ import docmodel
++import jalali as _jalali
+ 
+ # pylint: disable=no-member
+ 
+ _excel_date_zero = datetime.datetime(1899, 12, 30)
+ 
+ 
++def _parse_jalali_literal(value):
++  """Parse a date literal written on the Jalali calendar in a document that displays dates
++  on it (e.g. DATEDIF("۱۴۰۳/۰۱/۰۱", TODAY(), "D")). Returns a naive date or datetime, or None
++  when the document is not on the Jalali calendar or the string is not a Jalali date -- in
++  which case the caller falls back to the ordinary Gregorian parsing."""
++  if not _jalali.doc_uses_jalali():
++    return None
++  try:
++    parsed = _jalali.parse_jalali_string(value)
++  except ValueError:
++    parsed = None
++  if parsed is None:
++    return None
++  gy, gm, gd, time = parsed
++  if not time:
++    return datetime.date(gy, gm, gd)
++  t = _parse_time_of_day(time)
++  if t is None:
++    return None
++  return datetime.datetime(gy, gm, gd, t.hour, t.minute, t.second)
++
++
++def _parse_time_of_day(time):
++  import re
++  match = re.match(r"(\d{1,2}):(\d{2})(?::(\d{2}))?(\s*[AaPp]\.?\s?[Mm]\.?)?$", time.strip())
++  if not match:
++    return None
++  hour = int(match.group(1))
++  minute = int(match.group(2))
++  second = int(match.group(3) or 0)
++  ampm = match.group(4)
++  if ampm:
++    pm = ampm.strip().lower().startswith("p")
++    if hour == 12:
++      hour = 12 if pm else 0
++    elif pm:
++      hour += 12
++  if hour > 23 or minute > 59 or second > 59:
++    return None
++  return datetime.time(hour, minute, second)
++
++
+ def _make_datetime(value):
+   if isinstance(value, datetime.datetime):
+     return value
+@@ -19,6 +62,11 @@ def _make_datetime(value):
+   elif isinstance(value, datetime.time):
+     return datetime.datetime.combine(datetime.date.today(), value)
+   elif isinstance(value, str):
++    jalali = _parse_jalali_literal(value)
++    if jalali is not None:
++      if isinstance(jalali, datetime.datetime):
++        return jalali
++      return datetime.datetime.combine(jalali, datetime.time())
+     return dateutil.parser.parse(value)
+   else:
+     raise ValueError('Invalid date %r' % (value,))
+@@ -31,6 +79,11 @@ def _make_date(value):
+     return value
+   elif isinstance(value, str):
+     # Note: if the string is just a time, the result will be the current day
++    jalali = _parse_jalali_literal(value)
++    if jalali is not None:
++      if isinstance(jalali, datetime.datetime):
++        return jalali.date()
++      return jalali
+     return dateutil.parser.parse(value).date()
+   else:
+     # Note: unlike _make_datetime, this does not accept a datetime.time
+@@ -335,6 +388,13 @@ def DATEVALUE(date_string, tz=None):
+   ...
+   {}: Unknown string format: asdf
+   """
++  jalali = _parse_jalali_literal(date_string)
++  if jalali is not None:
++    if isinstance(jalali, datetime.datetime):
++      parsed = jalali
++    else:
++      parsed = datetime.datetime(jalali.year, jalali.month, jalali.day)
++    return parsed.replace(tzinfo=_get_tzinfo(tz))
+   return dateutil.parser.parse(date_string).replace(tzinfo=_get_tzinfo(tz))
+ 
+ 
+diff --git a/static/icons/icons.css b/static/icons/icons.css
+index 020c2497c..b5275159b 100644
+--- a/static/icons/icons.css
++++ b/static/icons/icons.css
+@@ -73,6 +73,7 @@
+     --icon-Empty: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCIgdmlld0JveD0iMCAwIDUuMjkyIDUuMjkyIj48cGF0aCBkPSJtIDAuMDMyNjIyNjMsMjkxLjcyMjI1IDUuMjMwMDMyMjcsNS4yNzY5IiBzdHlsZT0iZmlsbDpub25lO3N0cm9rZTojMDAwO3N0cm9rZS13aWR0aDouNTI5MTY2NztzdHJva2UtbGluZWNhcDpidXR0O3N0cm9rZS1saW5lam9pbjptaXRlcjtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1kYXNoYXJyYXk6bm9uZTtzdHJva2Utb3BhY2l0eToxO3BhaW50LW9yZGVyOm5vcm1hbCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMCAtMjkxLjcwOCkiLz48L3N2Zz4=');
+     --icon-Exclamation: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0ibm9uZSI+PHBhdGggZmlsbD0iIzAwMCIgZD0iTTkuNSAxSDYuNUw3IDEwSDlMOS41IDFaTTggMTVDOC44Mjg0MyAxNSA5LjUgMTQuMzI4NCA5LjUgMTMuNSA5LjUgMTIuNjcxNiA4LjgyODQzIDEyIDggMTIgNy4xNzE1NyAxMiA2LjUgMTIuNjcxNiA2LjUgMTMuNSA2LjUgMTQuMzI4NCA3LjE3MTU3IDE1IDggMTVaIi8+PC9zdmc+');
+     --icon-Expand: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PHBhdGggZmlsbD0iIzAwMCIgZmlsbC1ydWxlPSJub256ZXJvIiBkPSJNOCw5LjE3NDYzMDUyIEwxMC45MjE4MjczLDYuMTg5MDIzMiBDMTEuMTY4NDc0Miw1LjkzNjk5MjI3IDExLjU2ODM2NzksNS45MzY5OTIyNyAxMS44MTUwMTQ4LDYuMTg5MDIzMiBDMTIuMDYxNjYxNyw2LjQ0MTA1NDEzIDEyLjA2MTY2MTcsNi44NDk2NzcwMSAxMS44MTUwMTQ4LDcuMTAxNzA3OTQgTDgsMTEgTDQuMTg0OTg1MTksNy4xMDE3MDc5NCBDMy45MzgzMzgyNyw2Ljg0OTY3NzAxIDMuOTM4MzM4MjcsNi40NDEwNTQxMyA0LjE4NDk4NTE5LDYuMTg5MDIzMiBDNC40MzE2MzIxMSw1LjkzNjk5MjI3IDQuODMxNTI1NzgsNS45MzY5OTIyNyA1LjA3ODE3MjcsNi4xODkwMjMyIEw4LDkuMTc0NjMwNTIgWiIgdHJhbnNmb3JtPSJyb3RhdGUoLTkwIDggOC41KSIvPjwvc3ZnPg==');
++    --icon-ExpandArrows: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NDggNTEyIj48cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Ik0zMiAzMkMxNC4zIDMyIDAgNDYuMyAwIDY0bDAgOTZjMCAxNy43IDE0LjMgMzIgMzIgMzJzMzItMTQuMyAzMi0zMmwwLTY0IDY0IDBjMTcuNyAwIDMyLTE0LjMgMzItMzJzLTE0LjMtMzItMzItMzJMMzIgMzJ6TTY0IDM1MmMwLTE3LjctMTQuMy0zMi0zMi0zMlMwIDMzNC4zIDAgMzUybDAgOTZjMCAxNy43IDE0LjMgMzIgMzIgMzJsOTYgMGMxNy43IDAgMzItMTQuMyAzMi0zMnMtMTQuMy0zMi0zMi0zMmwtNjQgMCAwLTY0ek0zMjAgMzJjLTE3LjcgMC0zMiAxNC4zLTMyIDMyczE0LjMgMzIgMzIgMzJsNjQgMCAwIDY0YzAgMTcuNyAxNC4zIDMyIDMyIDMyczMyLTE0LjMgMzItMzJsMC05NmMwLTE3LjctMTQuMy0zMi0zMi0zMmwtOTYgMHpNNDQ4IDM1MmMwLTE3LjctMTQuMy0zMi0zMi0zMnMtMzIgMTQuMy0zMiAzMmwwIDY0LTY0IDBjLTE3LjcgMC0zMiAxNC4zLTMyIDMyczE0LjMgMzIgMzIgMzJsOTYgMGMxNy43IDAgMzItMTQuMyAzMi0zMmwwLTk2eiIvPjwvc3ZnPg==');
+     --icon-EyeHide: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PHBhdGggZmlsbD0iIzAwMCIgZmlsbC1ydWxlPSJub256ZXJvIiBkPSJNMi43Njc4NTAwNSw4LjM4Nzc2MTg2IEw4LjQ4MjQ3ODY1LDIuOTQ1MjU4NDMgQzcuNjkxMzc4OTEsMi4zMzc3ODQ3OCA2Ljg1OTU2NTI3LDIgNiwyIEM0LjY4NzE1Nzc5LDIgMy40MzkwNTMwNiwyLjc4Nzk2NTkxIDIuMzAxODY4ODMsNC4xMjEyODAyMiBDMS44OTUwOTk5MSw0LjU5ODIwNDU1IDEuNTMyNzI3ODQsNS4xMTA5NzkxMSAxLjIyMDU0MTc0LDUuNjIzNDE5NDQgQzEuMTMzOTQxMDEsNS43NjU1NzA5IDEuMDYwMjYyMTgsNS44OTIzMTU0OCAxLDYgQzEuMDYwMjYyMTgsNi4xMDc2ODQ1MiAxLjEzMzk0MTAxLDYuMjM0NDI5MSAxLjIyMDU0MTc0LDYuMzc2NTgwNTYgQzEuNTMyNzI3ODQsNi44ODkwMjA4OSAxLjg5NTA5OTkxLDcuNDAxNzk1NDUgMi4zMDE4Njg4Myw3Ljg3ODcxOTc4IEMyLjQ1NTIxNjY2LDguMDU4NTE1NDkgMi42MTA1ODE0OCw4LjIyODM5NDQ5IDIuNzY3ODUwMDUsOC4zODc3NjE4NiBaIE0zLjUxNzUyMTM1LDkuMDU0NzQxNTcgQzQuMzA4NjIxMDksOS42NjIyMTUyMiA1LjE0MDQzNDczLDEwIDYsMTAgQzcuMzEyODQyMjEsMTAgOC41NjA5NDY5NCw5LjIxMjAzNDA5IDkuNjk4MTMxMTcsNy44Nzg3MTk3OCBDMTAuMTA0OTAwMSw3LjQwMTc5NTQ1IDEwLjQ2NzI3MjIsNi44ODkwMjA4OSAxMC43Nzk0NTgzLDYuMzc2NTgwNTYgQzEwLjg2NjA1OSw2LjIzNDQyOTEgMTAuOTM5NzM3OCw2LjEwNzY4NDUyIDExLDYgQzEwLjkzOTczNzgsNS44OTIzMTU0OCAxMC44NjYwNTksNS43NjU1NzA5IDEwLjc3OTQ1ODMsNS42MjM0MTk0NCBDMTAuNDY3MjcyMiw1LjExMDk3OTExIDEwLjEwNDkwMDEsNC41OTgyMDQ1NSA5LjY5ODEzMTE3LDQuMTIxMjgwMjIgQzkuNTQ0NzgzMzQsMy45NDE0ODQ1MSA5LjM4OTQxODUyLDMuNzcxNjA1NTEgOS4yMzIxNDk5NSwzLjYxMjIzODE0IEwzLjUxNzUyMTM1LDkuMDU0NzQxNTcgWiBNOS4xOTgwNDkzMSwyLjI2Mzc2MjU3IEwxMC45MDUxNzI0LDAuNjM3OTMxMDM0IEMxMS4xMDUxMzc2LDAuNDQ3NDg4MDE3IDExLjQyMTYyNTksMC40NTUyMDcyNDYgMTEuNjEyMDY5LDAuNjU1MTcyNDE0IEMxMS44MDI1MTIsMC44NTUxMzc1ODIgMTEuNzk0NzkyOCwxLjE3MTYyNTk1IDExLjU5NDgyNzYsMS4zNjIwNjg5NyBMOS45MzU4NzU3MSwyLjk0MjAyMzEzIEMxMC4wNzI2MjI0LDMuMDgyNDQ2NTMgMTAuMjA3NjE5OSwzLjIyOTQzMzkgMTAuMzQwODQyNiwzLjM4MjYzMjA1IEMxMC43ODMyMzI5LDMuODkxMzU0NDcgMTEuMTc0NzIzMSw0LjQzNDY4NzU1IDExLjUxMjQxNTUsNC45NzgzNDQwOSBDMTEuNzE2MzQxLDUuMzA2NjQ3MTggMTEuODU4NTM2Niw1LjU2NTEwODYzIDExLjkzNTIyOCw1LjcxOTQ0MjEyIEMxMi4wMjE1OTA3LDUuODkzMjM3ODIgMTIuMDIxNTkwNyw2LjEwNjc2MjE4IDExLjkzNTIyOCw2LjI4MDU1Nzg4IEMxMS44NTg1MzY2LDYuNDM0ODkxMzcgMTEuNzE2MzQxLDYuNjkzMzUyODIgMTEuNTEyNDE1NSw3LjAyMTY1NTkxIEMxMS4xNzQ3MjMxLDcuNTY1MzEyNDUgMTAuNzgzMjMyOSw4LjEwODY0NTUzIDEwLjM0MDg0MjYsOC42MTczNjc5NSBDOS4wNTIxOTAyNiwxMC4wOTkyNDEyIDcuNTk3NDczMTUsMTEgNiwxMSBDNC44NTgyMTg4NiwxMSAzLjc4OTM2NTUyLDEwLjUzOTg0MTkgMi44MDE5NTA2OSw5LjczNjIzNzQzIEwxLjA5NDgyNzU5LDExLjM2MjA2OSBDMC44OTQ4NjI0MTgsMTEuNTUyNTEyIDAuNTc4Mzc0MDUyLDExLjU0NDc5MjggMC4zODc5MzEwMzQsMTEuMzQ0ODI3NiBDMC4xOTc0ODgwMTcsMTEuMTQ0ODYyNCAwLjIwNTIwNzI0NiwxMC44MjgzNzQxIDAuNDA1MTcyNDE0LDEwLjYzNzkzMSBMMi4wNjQxMjQyOSw5LjA1Nzk3Njg3IEMxLjkyNzM3NzYzLDguOTE3NTUzNDcgMS43OTIzODAwNyw4Ljc3MDU2NjEgMS42NTkxNTczNyw4LjYxNzM2Nzk1IEMxLjIxNjc2NzA3LDguMTA4NjQ1NTMgMC44MjUyNzY5MjgsNy41NjUzMTI0NSAwLjQ4NzU4NDUyMSw3LjAyMTY1NTkxIEMwLjI4MzY1ODk2Niw2LjY5MzM1MjgyIDAuMTQxNDYzMzc4LDYuNDM0ODkxMzcgMC4wNjQ3NzE5NTA0LDYuMjgwNTU3ODggQy0wLjAyMTU5MDY1MDEsNi4xMDY3NjIxOCAtMC4wMjE1OTA2NTAxLDUuODkzMjM3ODIgMC4wNjQ3NzE5NTA0LDUuNzE5NDQyMTIgQzAuMTQxNDYzMzc4LDUuNTY1MTA4NjMgMC4yODM2NTg5NjYsNS4zMDY2NDcxOCAwLjQ4NzU4NDUyMSw0Ljk3ODM0NDA5IEMwLjgyNTI3NjkyOCw0LjQzNDY4NzU1IDEuMjE2NzY3MDcsMy44OTEzNTQ0NyAxLjY1OTE1NzM3LDMuMzgyNjMyMDUgQzIuOTQ3ODA5NzQsMS45MDA3NTg4IDQuNDAyNTI2ODUsMSA2LDEgQzcuMTQxNzgxMTQsMSA4LjIxMDYzNDQ4LDEuNDYwMTU4MTQgOS4xOTgwNDkzMSwyLjI2Mzc2MjU3IFogTTQuMjUsNiBDNC4yNSw2LjI3NjE0MjM3IDQuMDI2MTQyMzcsNi41IDMuNzUsNi41IEMzLjQ3Mzg1NzYzLDYuNSAzLjI1LDYuMjc2MTQyMzcgMy4yNSw2IEMzLjI1LDQuNTM0NjgyNTQgNC40ODY0MTY2NywzLjM1NzE0Mjg2IDYsMy4zNTcxNDI4NiBDNi4yNzYxNDIzNywzLjM1NzE0Mjg2IDYuNSwzLjU4MTAwMDQ4IDYuNSwzLjg1NzE0Mjg2IEM2LjUsNC4xMzMyODUyMyA2LjI3NjE0MjM3LDQuMzU3MTQyODYgNiw0LjM1NzE0Mjg2IEM1LjAyODA4MzMzLDQuMzU3MTQyODYgNC4yNSw1LjA5ODE3NDYgNC4yNSw2IFogTTcuNzUsNiBDNy43NSw1LjcyMzg1NzYzIDcuOTczODU3NjMsNS41IDguMjUsNS41IEM4LjUyNjE0MjM3LDUuNSA4Ljc1LDUuNzIzODU3NjMgOC43NSw2IEM4Ljc1LDcuNDY1MzE3NDYgNy41MTM1ODMzMyw4LjY0Mjg1NzE0IDYsOC42NDI4NTcxNCBDNS43MjM4NTc2Myw4LjY0Mjg1NzE0IDUuNSw4LjQxODk5OTUyIDUuNSw4LjE0Mjg1NzE0IEM1LjUsNy44NjY3MTQ3NyA1LjcyMzg1NzYzLDcuNjQyODU3MTQgNiw3LjY0Mjg1NzE0IEM2Ljk3MTkxNjY3LDcuNjQyODU3MTQgNy43NSw2LjkwMTgyNTQgNy43NSw2IFoiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDIgMikiLz48L3N2Zz4=');
+     --icon-EyeShow: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PHBhdGggZmlsbD0iIzAwMCIgZmlsbC1ydWxlPSJub256ZXJvIiBkPSJNMy4yMzUwMDQ3Nyw4LjQwMDQwMDM3IEMzLjU0NzMwNDc5LDguOTEwMzQxODIgMy45MDk3Mzk1LDkuNDIwNTE3OTEgNC4zMTY0Nzk3MSw5Ljg5NDkwOTkzIEM1LjQ1MTQxOTI2LDExLjIxODYyMDQgNi42OTU2MTA0MywxMiA4LDEyIEM5LjMwNDM4OTU3LDEyIDEwLjU0ODU4MDcsMTEuMjE4NjIwNCAxMS42ODM1MjAzLDkuODk0OTA5OTMgQzEyLjA5MDI2MDUsOS40MjA1MTc5MSAxMi40NTI2OTUyLDguOTEwMzQxODIgMTIuNzY0OTk1Miw4LjQwMDQwMDM3IEMxMi44NTg1NzQ3LDguMjQ3NTk4NDQgMTIuOTM3MTE2NCw4LjExMjYxMDY0IDEzLDggQzEyLjkzNzExNjQsNy44ODczODkzNiAxMi44NTg1NzQ3LDcuNzUyNDAxNTYgMTIuNzY0OTk1Miw3LjU5OTU5OTYzIEMxMi40NTI2OTUyLDcuMDg5NjU4MTggMTIuMDkwMjYwNSw2LjU3OTQ4MjA5IDExLjY4MzUyMDMsNi4xMDUwOTAwNyBDMTAuNTQ4NTgwNyw0Ljc4MTM3OTYxIDkuMzA0Mzg5NTcsNCA4LDQgQzYuNjk1NjEwNDMsNCA1LjQ1MTQxOTI2LDQuNzgxMzc5NjEgNC4zMTY0Nzk3MSw2LjEwNTA5MDA3IEMzLjkwOTczOTUsNi41Nzk0ODIwOSAzLjU0NzMwNDc5LDcuMDg5NjU4MTggMy4yMzUwMDQ3Nyw3LjU5OTU5OTYzIEMzLjE0MTQyNTMxLDcuNzUyNDAxNTYgMy4wNjI4ODM1OCw3Ljg4NzM4OTM2IDMsOCBDMy4wNjI4ODM1OCw4LjExMjYxMDY0IDMuMTQxNDI1MzEsOC4yNDc1OTg0NCAzLjIzNTAwNDc3LDguNDAwNDAwMzcgWiBNMi4wNTk4MDYyNSw3Ljc0MTE2MTAxIEMyLjEzNjA0ODExLDcuNTg2OTAyODggMi4yNzc3NTg2Nyw3LjMyNzkzMDcxIDIuNDgxMTU5MDYsNi45OTg3MDMwNyBDMi44MTgyMjQ4OCw2LjQ1MzEyMjA1IDMuMjA5MDU2NDgsNS45MDc3NzA5MiAzLjY1MDgwNTQ1LDUuMzk3MDQwMTQgQzQuOTM5ODA0MDUsMy45MDY3NTY0NiA2LjM5NjMzNDE5LDMgOCwzIEM5LjYwMzY2NTgxLDMgMTEuMDYwMTk1OSwzLjkwNjc1NjQ2IDEyLjM0OTE5NDYsNS4zOTcwNDAxNCBDMTIuNzkwOTQzNSw1LjkwNzc3MDkyIDEzLjE4MTc3NTEsNi40NTMxMjIwNSAxMy41MTg4NDA5LDYuOTk4NzAzMDcgQzEzLjcyMjI0MTMsNy4zMjc5MzA3MSAxMy44NjM5NTE5LDcuNTg2OTAyODggMTMuOTQwMTkzNyw3Ljc0MTE2MTAxIEMxNC4wMTk5MzU0LDcuOTAyNTAwMTkgMTQuMDE5OTM1NCw4LjA5NzQ5OTgxIDEzLjk0MDE5MzcsOC4yNTg4Mzg5OSBDMTMuODYzOTUxOSw4LjQxMzA5NzEyIDEzLjcyMjI0MTMsOC42NzIwNjkyOSAxMy41MTg4NDA5LDkuMDAxMjk2OTMgQzEzLjE4MTc3NTEsOS41NDY4Nzc5NSAxMi43OTA5NDM1LDEwLjA5MjIyOTEgMTIuMzQ5MTk0NiwxMC42MDI5NTk5IEMxMS4wNjAxOTU5LDEyLjA5MzI0MzUgOS42MDM2NjU4MSwxMyA4LDEzIEM2LjM5NjMzNDE5LDEzIDQuOTM5ODA0MDUsMTIuMDkzMjQzNSAzLjY1MDgwNTQ1LDEwLjYwMjk1OTkgQzMuMjA5MDU2NDgsMTAuMDkyMjI5MSAyLjgxODIyNDg4LDkuNTQ2ODc3OTUgMi40ODExNTkwNiw5LjAwMTI5NjkzIEMyLjI3Nzc1ODY3LDguNjcyMDY5MjkgMi4xMzYwNDgxMSw4LjQxMzA5NzEyIDIuMDU5ODA2MjUsOC4yNTg4Mzg5OSBDMS45ODAwNjQ1OCw4LjA5NzQ5OTgxIDEuOTgwMDY0NTgsNy45MDI1MDAxOSAyLjA1OTgwNjI1LDcuNzQxMTYxMDEgWiBNOC4wNjQyMTk2MiwxMC4yODcyNzY2IEM2LjcyNzYwMzYyLDEwLjI4NzI3NjYgNS42NDQwNjIyNiw5LjI2MzIyNzk2IDUuNjQ0MDYyMjYsOCBDNS42NDQwNjIyNiw2LjczNjc3MjA0IDYuNzI3NjAzNjIsNS43MTI3MjM0NCA4LjA2NDIxOTYyLDUuNzEyNzIzNDQgQzkuNDAwODM1NjMsNS43MTI3MjM0NCAxMC40ODQzNzcsNi43MzY3NzIwNCAxMC40ODQzNzcsOCBDMTAuNDg0Mzc3LDkuMjYzMjI3OTYgOS40MDA4MzU2MywxMC4yODcyNzY2IDguMDY0MjE5NjIsMTAuMjg3Mjc2NiBaIE04LjA2NDIxOTYyLDkuMzI0MjEyNzUgQzguODM4MDQ5OTQsOS4zMjQyMTI3NSA5LjQ2NTM2MzM2LDguNzMxMzQyNTEgOS40NjUzNjMzNiw4IEM5LjQ2NTM2MzM2LDcuMjY4NjU3NDkgOC44MzgwNDk5NCw2LjY3NTc4NzI1IDguMDY0MjE5NjIsNi42NzU3ODcyNSBDNy4yOTAzODkzMSw2LjY3NTc4NzI1IDYuNjYzMDc1ODksNy4yNjg2NTc0OSA2LjY2MzA3NTg5LDggQzYuNjYzMDc1ODksOC43MzEzNDI1MSA3LjI5MDM4OTMxLDkuMzI0MjEyNzUgOC4wNjQyMTk2Miw5LjMyNDIxMjc1IFoiLz48L3N2Zz4=');
+     --icon-Feedback: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PHBhdGggZmlsbD0iIzAwMCIgZmlsbC1ydWxlPSJub256ZXJvIiBkPSJNNy4yMTgyMTMzLDkgQzcuMjI1MTUxOTcsOC45OTk4NTUxNSA3LjIzMjA4MzIxLDguOTk5ODU1NjQgNy4yMzkwMDI2LDkgTDguNTI0LDkgTDguNzEwNDY2NjcsOS4wMzYwNzA5MyBMMTMsMTAuNzYwMTU5OSBMMTMsMy4yMzk4NDAxMSBMOC43MTA0NjY2Nyw0Ljk2MzkyOTA3IEw4LjUyNCw1IEw1LDUgQzMuODk1NDMwNSw1IDMsNS44OTU0MzA1IDMsNyBDMyw3LjUzMDQzMjk4IDMuMjEwNzEzNjgsOC4wMzkxNDA4MSAzLjU4NTc4NjQ0LDguNDE0MjEzNTYgQzMuOTYwODU5MTksOC43ODkyODYzMiA0LjQ2OTU2NzAyLDkgNSw5IEw3LjIxODIxMzA2LDkgWiBNOC4wNDA1MDM3OSwxMCBMOC44NDUwNTE1MywxMS41OTgxMjAzIEM5LjA0NDU1OTMzLDExLjk4Nzc2MTMgOS4wODEwNTY1NCwxMi40NDA3MTI1IDguOTQ2NTA5NCwxMi44NTcyNzA1IEM4LjgxMTk2MjI3LDEzLjI3MzgyODQgOC41MTczOTk1LDEzLjYxOTg0ODEgOC4xMjc0OTI4OSwxMy44MTkyNDk0IEM3LjMxNjIzMTAzLDE0LjIzMzc1MDQgNi4zMjI1NDQ2MiwxMy45MTI3OTIyIDUuOTA3NzcxOTgsMTMuMTAzNDgwOSBMNC4yNTYxNzkwNSw5LjkwNjMzNDc3IEMzLjczOTI3OTU5LDkuNzc0MDI4ODYgMy4yNjIzNjUzMSw5LjUwNTAwNiAyLjg3ODY3OTY2LDkuMTIxMzIwMzQgQzIuMzE2MDcwNTIsOC41NTg3MTEyMSAyLDcuNzk1NjQ5NDcgMiw3IEMyLDUuMzQzMTQ1NzUgMy4zNDMxNDU3NSw0IDUsNCBMOC40MjcyNzc4MSw0IEwxMy4zMTM1MzMzLDIuMDM2MDcwOTMgQzEzLjY0MjA3NjIsMS45MDQwMTk5NCAxNCwyLjE0NTkxMjYyIDE0LDIuNSBMMTQsMTEuNSBDMTQsMTEuODU0MDg3NCAxMy42NDIwNzYyLDEyLjA5NTk4MDEgMTMuMzEzNTMzMywxMS45NjM5MjkxIEw4LjQyNzI3NzgxLDEwIEw4LjA0MDUwMzc5LDEwIFogTTUuNDMwMTEyNCwxMCBMNi43OTY5NjU4NCwxMi42NDU5NTMxIEM2Ljk2MDgwNDMxLDEyLjk2NTYzNTIgNy4zNTI2MjEzMSwxMy4wOTIxOTExIDcuNjcyMzM5NzgsMTIuOTI4ODM2MiBDNy44MjU4NzM0MywxMi44NTAzMTc5IDcuOTQxOTEzMzEsMTIuNzE0MDA3MSA3Ljk5NDkxNjczLDEyLjU0OTkwODUgQzguMDQ3OTIwMTUsMTIuMzg1ODA5OSA4LjAzMzU0MjQ2LDEyLjIwNzM3NDYgNy45NTM0MDI1LDEyLjA1MDgzNDggTDYuOTIwOTMxNTEsMTAgTDUuNDMwMTEyNCwxMCBaIi8+PC9zdmc+');
+diff --git a/test/common/ValueGuesser.ts b/test/common/ValueGuesser.ts
+index 6eabcd8cc..76b024ec1 100644
+--- a/test/common/ValueGuesser.ts
++++ b/test/common/ValueGuesser.ts
+@@ -6,12 +6,21 @@ import { assert } from "chai";
+ const defaultDocSettings = {
+   locale: "en-US",
+ };
++const persianDocSettings = {
++  locale: "fa-IR",
++};
+ 
+ function check(values: (string | null)[], expectedResult: GuessResult) {
+   const result = guessColInfo(values, defaultDocSettings, "America/New_York");
+   assert.deepEqual(result, expectedResult);
+ }
+ 
++// The Persian checks use UTC so that the expected timestamps are plain UTC midnights.
++function checkPersian(values: (string | null)[], expectedResult: GuessResult) {
++  const result = guessColInfo(values, persianDocSettings, "UTC");
++  assert.deepEqual(result, expectedResult);
++}
++
+ describe("ValueGuesser", function() {
+   it("should guess booleans and numbers correctly", function() {
+     check(
+@@ -172,6 +181,126 @@ describe("ValueGuesser", function() {
+     );
+   });
+ 
++  it("should guess Jalali dates and datetimes for a Persian document", function() {
++    // 1405/11/02 in the Jalali calendar is 2027-01-22 in the Gregorian one.
++    checkPersian(
++      ["1405/11/02", "1405/11/05"],
++      {
++        values: [1800576000, 1800835200],
++        colInfo: {
++          type: "Date",
++          widgetOptions: {
++            dateFormat: "YYYY/MM/DD",
++            timeFormat: "",
++            isCustomDateFormat: true,
++            isCustomTimeFormat: true,
++          },
++        },
++      },
++    );
++
++    // A Persian user who writes the day before the month gets the day-first interpretation.
++    checkPersian(
++      ["02-11-1405", "03-11-1405"],
++      {
++        values: [1800576000, 1800662400],
++        colInfo: {
++          type: "Date",
++          widgetOptions: {
++            dateFormat: "DD-MM-YYYY",
++            timeFormat: "",
++            isCustomDateFormat: false,
++            isCustomTimeFormat: true,
++          },
++        },
++      },
++    );
++
++    // Persian digits are read as easily as Latin ones.
++    checkPersian(
++      ["۱۴۰۵/۱۱/۰۲", "۱۴۰۵/۱۱/۰۵"],
++      {
++        values: [1800576000, 1800835200],
++        colInfo: {
++          type: "Date",
++          widgetOptions: {
++            dateFormat: "YYYY/MM/DD",
++            timeFormat: "",
++            isCustomDateFormat: true,
++            isCustomTimeFormat: true,
++          },
++        },
++      },
++    );
++    checkPersian(
++      ["۰۲-۱۱-۱۴۰۵", "۰۳-۱۱-۱۴۰۵"],
++      {
++        values: [1800576000, 1800662400],
++        colInfo: {
++          type: "Date",
++          widgetOptions: {
++            dateFormat: "DD-MM-YYYY",
++            timeFormat: "",
++            isCustomDateFormat: false,
++            isCustomTimeFormat: true,
++          },
++        },
++      },
++    );
++
++    // Mixed digit shapes are common in text copied out of chat clients.
++    checkPersian(
++      ["1405/11/02", "۱۴۰۵/۱۱/۰۵"],
++      {
++        values: [1800576000, 1800835200],
++        colInfo: {
++          type: "Date",
++          widgetOptions: {
++            dateFormat: "YYYY/MM/DD",
++            timeFormat: "",
++            isCustomDateFormat: true,
++            isCustomTimeFormat: true,
++          },
++        },
++      },
++    );
++
++    // A timestamp with a time of day is a DateTime column.
++    checkPersian(
++      ["1405/09/06 14:30", "1405/09/07 09:15"],
++      {
++        values: [1795789800, 1795857300],
++        colInfo: {
++          type: "DateTime:UTC",
++          widgetOptions: {
++            dateFormat: "YYYY/MM/DD",
++            timeFormat: "HH:mm",
++            isCustomDateFormat: true,
++            isCustomTimeFormat: false,
++          },
++        },
++      },
++    );
++
++    // Numbers typed in Persian digits guess as Numeric, the same as Latin-typed numbers.
++    checkPersian(
++      ["۱۲۳۴", "۲۳۴۵"],
++      { values: [1234, 2345], colInfo: { type: "Numeric" } },
++    );
++    checkPersian(
++      ["1,234.5", "2,345.6"],
++      // In a Persian document the decimal separator is "٫" and the grouping one is "٬",
++      // so a comma does not parse at all.
++      { colInfo: { type: "Text" } },
++    );
++
++    // Plain Latin digits in a Persian document still guess as Numeric.
++    checkPersian(
++      ["1234", "2345"],
++      { values: [1234, 2345], colInfo: { type: "Numeric" } },
++    );
++  });
++
+   it("should require 90% of values to be parsed", function() {
+     // 90% of the strings can be parsed to numbers, so guess Numeric.
+     check(
 diff --git a/test/server/lib/sendAppPage.ts b/test/server/lib/sendAppPage.ts
-index 73c827d..107a7d5 100644
+index 73c827d43..107a7d5f8 100644
 --- a/test/server/lib/sendAppPage.ts
 +++ b/test/server/lib/sendAppPage.ts
 @@ -1,9 +1,49 @@

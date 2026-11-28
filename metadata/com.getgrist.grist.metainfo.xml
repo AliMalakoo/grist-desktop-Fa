@@ -66,6 +66,12 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.5.0" date="2026-11-28">
+      <description>
+        <p>Updates the Persian layer to grist-core-fa be6d547: Jalali calendar view, right-to-left grid layout, Jalali literals in the Python sandbox, and bundled Vazirmatn fonts</p>
+        <p>Updates core Grist to v1.7.22 master (6346baff)</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-27">
       <description>
         <p>Persian edition defaults to the Persian interface and to fa-IR for new documents</p>
