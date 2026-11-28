@@ -32,7 +32,9 @@ const HEADLESS = process.env.HEADLESS !== '0';
 
 // Upstream nbrowser suites known to pass against the desktop.
 const DEFAULT_UPSTREAM_SUITES = [
-  'MultiColumn1',
+  'ActionLog', 'CalendarView', 'ChoiceList', 'ColumnTransform', 'CopyPasteLinked',
+  'DetailView', 'DuplicateDocument', 'FilteringBugs', 'LeftPanel',
+  'MultiColumn1', 'MultiColumn3', 'Pages', 'RowMenu', 'ToggleColumns',
 ];
 
 // The two extra suites do not pass with the app as the browser.

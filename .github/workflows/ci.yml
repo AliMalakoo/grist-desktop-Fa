@@ -22,7 +22,9 @@ jobs:
       fail-fast: false
       matrix:
         os:
+          - macos-15-intel
           - ubuntu-22.04
+          - windows-2022
         host:
           - x64
         target:
@@ -93,7 +95,6 @@ jobs:
           exit "$status"
 
       - name: Run core browser tests against the desktop app as a server
-        if: ${{ false }}
         # macos-15-intel, the slowest runner, has run past 30 minutes here.
         timeout-minutes: 45
         shell: bash
@@ -120,11 +121,6 @@ jobs:
             echo "### آزمون‌های مرورگری هسته شکست خوردند"
             echo
             cat test-logs/*-failures.md
-            echo
-            echo '#### Raw log tail'
-            echo '```'
-            tail -n 220 test-logs/upstream-browser-tests.log | sed 's/::/[:][:]/g'
-            echo '```'
           } > test-logs/comment.md
           gh pr comment "$PR_NUMBER" --body-file test-logs/comment.md
 
