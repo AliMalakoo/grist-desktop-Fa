@@ -53,8 +53,15 @@ export async function loadConfig() {
   validateOrFallback(
     "GRIST_DESKTOP_USE_UPDATE",
     (useUpdate) => ["true", "false"].includes(useUpdate),
-    "true"
+    "false"
   )
+  validateOrFallback(
+    "GRIST_DEFAULT_LOCALE",
+    // grist-core accepts complete codes such as fa-IR or en-US; anything else would fall back to
+    // en-US without telling the user. earlyDefaults.ts sets fa-IR before this runs.
+    (locale) => /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(locale),
+    "fa-IR"
+  );
   validateOrFallback(
     "GRIST_DEFAULT_USERNAME",
     NO_VALIDATION,

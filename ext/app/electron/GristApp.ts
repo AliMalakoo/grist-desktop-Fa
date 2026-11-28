@@ -24,8 +24,8 @@ import { DesktopDocStorageManager, isDesktopStorageManager } from "app/server/li
 import { DocScope, HomeDBManager } from "app/gen-server/lib/homedb/HomeDBManager";
 import { getDefaultUser } from "app/electron/userUtils";
 
-const GRIST_DOCUMENT_FILTER = {name: "Grist documents", extensions: ["grist"]};
-const IMPORTABLE_DOCUMENT_FILTER = {name: "Importable documents", extensions:
+const GRIST_DOCUMENT_FILTER = {name: "اسناد Grist", extensions: ["grist"]};
+const IMPORTABLE_DOCUMENT_FILTER = {name: "پرونده‌های قابل درون‌ریزی", extensions:
   EXTENSIONS_IMPORTABLE_AS_DOC.filter(ext => ext !== ".grist").map(ext => ext.substring(1))};
 
 type InstanceHandoverInfo = {
@@ -80,7 +80,7 @@ export class GristApp {
       if (instanceHandoverInfo.fileToOpen !== null) {
         // If the new instance didn't want to open any file, we don't need to do anything.
         this.openFile(instanceHandoverInfo.fileToOpen)
-          .catch((e: Error) => electron.dialog.showErrorBox("Cannot open file", e.message));
+          .catch((e: Error) => electron.dialog.showErrorBox("نمی‌توان پرونده را باز کرد", e.message));
       }
     });
 
@@ -139,7 +139,7 @@ export class GristApp {
     });
     this.appMenu.on("menu-file-open", async (win: electron.BrowserWindow) => {
       const result = await electron.dialog.showOpenDialog({
-        title: "Open or import",
+        title: "باز کردن یا درون‌ریزی",
         defaultPath: electron.app.getPath("documents"),
         filters: [GRIST_DOCUMENT_FILTER, IMPORTABLE_DOCUMENT_FILTER],
         properties: ["openFile"]
@@ -162,7 +162,7 @@ export class GristApp {
     electron.app.on("open-file", (e, filePath) => {
       e?.preventDefault();
       this.openFile(filePath)
-        .catch((e: Error) => electron.dialog.showErrorBox("Cannot open file", e.message));
+        .catch((e: Error) => electron.dialog.showErrorBox("نمی‌توان پرونده را باز کرد", e.message));
     });
 
     // Shut down the Grist server gracefully when the application is closed.
@@ -192,7 +192,7 @@ export class GristApp {
         await this.openFile(fileToOpen);
       } catch(e) {
         this.windowManager.add(null);
-        electron.dialog.showErrorBox("Cannot open file", (e as Error).message);
+        electron.dialog.showErrorBox("نمی‌توان پرونده را باز کرد", (e as Error).message);
       }
     }
   }
@@ -215,8 +215,8 @@ export class GristApp {
    */
   private async askNewGristDocPath(initiatorWindow: electron.BrowserWindow): Promise<string|null> {
     const result = await electron.dialog.showSaveDialog(initiatorWindow, {
-      title: "Save new Grist document",
-      buttonLabel: "Save",
+      title: "ذخیرهٔ سند جدید Grist",
+      buttonLabel: "ذخیره",
       filters: [GRIST_DOCUMENT_FILTER],
     });
     if (result.canceled) {
@@ -226,11 +226,11 @@ export class GristApp {
       ? result.filePath
       : result.filePath + ".grist";
     if (fileExists(docPath)) {
-      electron.dialog.showErrorBox("Cannot create document", `Document ${docPath} already exists.`);
+      electron.dialog.showErrorBox("نمی‌توان سند ساخت", `سند ${docPath} از قبل وجود دارد.`);
       return null;
     }
     if (!fileCreatable(docPath)) {
-      electron.dialog.showErrorBox("Cannot create document", `Selected location ${docPath} is not writable.`);
+      electron.dialog.showErrorBox("نمی‌توان سند ساخت", `محل انتخاب‌شده ${docPath} قابل نوشتن نیست.`);
       return null;
     }
     return docPath;
@@ -346,8 +346,8 @@ export class GristApp {
     let srcDocPath: string | null = null;
     if (options?.importPath === "dialog") {
       const result = await electron.dialog.showOpenDialog(initiatorWindow, {
-        title: "Import file as new document",
-        buttonLabel: "Import",
+        title: "درون‌ریزی پرونده به‌عنوان سند جدید",
+        buttonLabel: "درون‌ریزی",
         filters: [GRIST_DOCUMENT_FILTER, IMPORTABLE_DOCUMENT_FILTER],
       });
       if (result.canceled) {

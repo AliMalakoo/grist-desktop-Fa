@@ -1,5 +1,10 @@
 # Grist Desktop
 
+> **نسخهٔ فارسی:** این مخزن نسخهٔ فارسی Grist Desktop را با تقویم جلالی، چیدمان
+> راست‌به‌چپ و فونت وزیرمتن می‌سازد. راهنمای کامل در
+> [README.fa.md](README.fa.md) و تاریخچهٔ تغییرات در [CHANGELOG.fa.md](CHANGELOG.fa.md)
+> است.
+
 This is an Electron build of [Grist](https://github.com/gristlabs/grist-core/).
 Use it to easily open and edit Grist spreadsheets on your computer. It does not
 need the internet, and will work fine on a desert island (assuming you can find a

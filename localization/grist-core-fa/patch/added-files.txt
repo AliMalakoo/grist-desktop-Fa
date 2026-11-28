@@ -1,0 +1,15 @@
+app/client/components/JalaliCalendar.ts
+app/client/lib/rtlPlacement.ts
+app/client/ui/JalaliDatePicker.ts
+app/client/ui/Rtl.css
+app/common/LanguageDirection.ts
+app/common/jalali.ts
+sandbox/grist/functions/test_jalali_date.py
+sandbox/grist/jalali.py
+static/fonts/vazirmatn/LICENSE
+static/fonts/vazirmatn/vazirmatn-arabic-400-normal.woff2
+static/fonts/vazirmatn/vazirmatn-arabic-700-normal.woff2
+static/fonts/vazirmatn/vazirmatn-latin-400-normal.woff2
+static/fonts/vazirmatn/vazirmatn-latin-700-normal.woff2
+static/ui-icons/UI/ExpandArrows.svg
+test/common/jalali.ts

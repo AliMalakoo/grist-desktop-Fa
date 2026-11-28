@@ -1,3 +1,5 @@
+// Keep this import first: it sets environment defaults that core modules read while loading.
+import "app/electron/earlyDefaults";
 import * as electron from "electron";
 import * as path from "path";
 import { Command } from "commander";

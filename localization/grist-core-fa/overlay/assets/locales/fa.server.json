@@ -1,0 +1,25 @@
+{
+  "DocApi": {
+    "UntitledDocument": "سند بی‌نام"
+  },
+  "access": {
+    "docDisabled": "این سند از کار افتاده است.",
+    "docNoAccess": "شما دسترسی به این سند ندارید.",
+    "userDisabled": "کاربر غیرفعال است (دلیل: {{- reason }})",
+    "userDisabledReasonMissing": "دلیلی ذکر نشده"
+  },
+  "admin": {
+    "emptyOrg": "مالکی در سازمان مدیریتی تعریف‌شده با `GRIST_INSTALL_ADMIN_ORG={{org}}` پیدا نشد",
+    "orgUser": "کاربر مالک سازمان مدیریتی تعریف‌شده با `GRIST_INSTALL_ADMIN_ORG={{org}}` است",
+    "noAdminEmail": "حساب مدیریتی وجود ندارد چون `GRIST_ADMIN_EMAIL` و `GRIST_DEFAULT_EMAIL` تنظیم نشده‌اند",
+    "accountByEmail": "حساب مدیریتی تعریف‌شده با `GRIST_DEFAULT_EMAIL={{defaultEmail}}`"
+  },
+  "oidc": {
+    "emailNotVerifiedError": "لطفاً رایانامه خود را در ارائه‌دهنده هویت تأیید کنید و دوباره وارد شوید."
+  },
+  "sendAppPage": {
+    "Loading...": "در حال بارگذاری...",
+    "og-description": "یک صفحه‌گستر الگوی مدرن و متن‌باز که فراتر از شبکه می‌رود",
+    "og-title": "Grist، تحول صفحه‌گسترها"
+  }
+}

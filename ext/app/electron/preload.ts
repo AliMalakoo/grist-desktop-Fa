@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 });
 
+// Only the language default is exposed to the page. The Electron flag itself stays in the
+// preload's isolated world, as upstream has it, so core's Electron-specific widget and webview
+// paths keep their usual behaviour in the desktop build.
+contextBridge.exposeInMainWorld("gristDesktopDefaultLocale", "fa");
+
 process.once('loaded', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (global as any).isRunningUnderElectron = true;

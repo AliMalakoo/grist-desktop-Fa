@@ -48,6 +48,10 @@ class AppMenu extends events.EventEmitter {
           click: () => app.emit('open-file', undefined, filePath)
        });
     });
+    // An empty submenu looks like a bug in the menu; say why it is empty instead.
+    if (!subMenu.length) {
+      subMenu.push({ label: 'هنوز سندی باز نشده است', enabled: false });
+    }
     return subMenu;
   }
 
@@ -58,65 +62,65 @@ class AppMenu extends events.EventEmitter {
       menuTemplate.push({
         label: appName,
         submenu: [
-          { role: 'about' },
+          { role: 'about', label: 'دربارهٔ Grist' },
           // On Mac, the "Check for Updates" item goes into the leftmost "Grist" menu.
           ...(useUpdate ? this.buildUpdateItemsTemplate() : []),
 
           { type: 'separator' },
-          { role: 'services', },
+          { role: 'services', label: 'سرویس‌ها' },
           { type: 'separator' },
-          { role: 'hide' },
-          { role: 'hideothers' },
-          { role: 'unhide' },
+          { role: 'hide', label: 'پنهان کردن Grist' },
+          { role: 'hideothers', label: 'پنهان کردن بقیه' },
+          { role: 'unhide', label: 'نمایش همه' },
           { type: 'separator' },
-          { role: 'quit' }
+          { role: 'quit', label: 'خروج' }
       ]});
     }
 
     menuTemplate.push({
-      label: 'File',
+      label: 'پرونده',
       submenu: [{
-        label: 'New',
+        label: 'سند جدید',
         accelerator: 'CmdOrCtrl+N',
         click: (item, focusedWindow) => this.emit('menu-file-new', focusedWindow)
       }, {
-        label: 'Open...',
+        label: 'باز کردن...',
         accelerator: 'CmdOrCtrl+O',
         click: (item, focusedWindow) => this.emit('menu-file-open', focusedWindow)
       }, {
-        label: 'Open Recent',
+        label: 'اسناد اخیر',
         submenu: this.buildOpenRecentSubmenu()
       }, {
-        role: 'close'
+        role: 'close', label: 'بستن پنجره'
       }]
       .concat(!isMac ? [
         { type: 'separator' },
-        { role: 'quit' }
+        { role: 'quit', label: 'خروج' }
       ] : [])
     }, {
-      label: 'Edit',
+      label: 'ویرایش',
       submenu: [{
-        label: 'Undo',
+        label: 'واگرد',
         accelerator: 'CmdOrCtrl+Z',
         // Not setting role because we're firing a custom action in click
         click: (item, win) => win.webContents.executeJavaScript('gristApp.allCommands.undo.run()')
       }, {
-        label: 'Redo',
+        label: 'بازانجام',
         accelerator: 'Shift+CmdOrCtrl+Z',
         // Not setting role because we're firing a custom action in click
         click: (item, win) => win.webContents.executeJavaScript('gristApp.allCommands.redo.run()')
       },
       { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      { role: 'selectall' } ]
+      { role: 'cut', label: 'برش' },
+      { role: 'copy', label: 'رونوشت' },
+      { role: 'paste', label: 'چسباندن' },
+      { role: 'selectall', label: 'انتخاب همه' } ]
     }, {
-      label: 'View',
+      label: 'نمایش',
       submenu: [{
-        role: 'togglefullscreen'
+        role: 'togglefullscreen', label: 'تمام‌صفحه'
       }, {
-        label: 'Toggle Developer Tools',
+        label: 'ابزارهای توسعه‌دهنده',
         accelerator: isMac ? 'Alt+Command+I' : 'Ctrl+Shift+I',
         click: function (item, focusedWindow) {
           if (focusedWindow) {
@@ -125,22 +129,22 @@ class AppMenu extends events.EventEmitter {
         }
       }]
     }, {
-      role: 'window',
+      role: 'window', label: 'پنجره',
       submenu: [{
-        role: 'minimize'
+        role: 'minimize', label: 'کمینه کردن'
       }]
       .concat(isMac ? [
         { type: 'separator' },
-        { role: 'front' }
+        { role: 'front', label: 'آوردن همه به جلو' }
       ] : [])
     }, {
-      label: 'Help',
+      label: 'راهنما',
       role: 'help',
       submenu: (
         // On Windows, the "Check for Updates" item goes in the rightmost Help menu.
         ((useUpdate && !isMac) ? [ ...this.buildUpdateItemsTemplate(), { type: 'separator' }] : [])
         .concat({
-          label: 'Grist User Help',
+          label: 'راهنمای Grist',
           click: (item, win) => win.webContents.executeJavaScript('gristApp.allCommands.help.run()')
         })
       )
@@ -169,10 +173,10 @@ class AppMenu extends events.EventEmitter {
   setUpdateState(state) {
     this._updateState = state;
     const labelToState = {
-      'Check for Updates':          'idle',
-      'Checking for Updates...':    'checking',
-      'Downloading Update...':      'downloading',
-      'Relaunch to Update':         'relaunch',
+      'بررسی به‌روزرسانی':          'idle',
+      'در حال بررسی به‌روزرسانی...':    'checking',
+      'در حال دریافت به‌روزرسانی...':      'downloading',
+      'راه‌اندازی دوباره برای به‌روزرسانی':         'relaunch',
     };
     AppMenu.forEachMenuItem(this._menu, item => {
       let labelState = labelToState[item.label];
@@ -184,10 +188,10 @@ class AppMenu extends events.EventEmitter {
 
   buildUpdateItemsTemplate() {
     return [
-      { visible: true,  label: 'Check for Updates', click: () => this.emit('check-for-updates') },
-      { visible: false, label: 'Checking for Updates...', enabled: false },
-      { visible: false, label: 'Downloading Update...', enabled: false },
-      { visible: false, label: 'Relaunch to Update', click: () => this.emit('quit-and-install') },
+      { visible: true,  label: 'بررسی به‌روزرسانی', click: () => this.emit('check-for-updates') },
+      { visible: false, label: 'در حال بررسی به‌روزرسانی...', enabled: false },
+      { visible: false, label: 'در حال دریافت به‌روزرسانی...', enabled: false },
+      { visible: false, label: 'راه‌اندازی دوباره برای به‌روزرسانی', click: () => this.emit('quit-and-install') },
     ];
   }
 }

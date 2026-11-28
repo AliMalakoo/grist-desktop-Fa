@@ -91,14 +91,14 @@ export class UpdateManager {
     log.warn(`Update ${info.version} available; current version ${version.version}`);
     electron.dialog.showMessageBox({
       type: 'info',
-      buttons: ['Download Update', 'Remind Me Later'],
+      buttons: ['دریافت به‌روزرسانی', 'یادآوری بعداً'],
       defaultId: 0,
       cancelId: 1,
       noLink: true,
-      title: 'Update Available',
-      message: 'A new version of Grist is available!',
-      detail: `Would you like to download and install Grist ${info.version} now? ` +
-        `You have ${version.version}.`
+      title: 'به‌روزرسانی موجود است',
+      message: 'نسخهٔ تازه‌ای از Grist موجود است!',
+      detail: `می‌خواهید Grist ${info.version} را همین حالا دریافت و نصب کنید؟ ` +
+        `نسخهٔ شما ${version.version} است.`
     } as any, ((index: any) => {
       if (index === 0) {
         this._suppressPopups = false;
@@ -118,10 +118,10 @@ export class UpdateManager {
     } else {
       electron.dialog.showMessageBox({
         type: 'info',
-        buttons: ['OK'],
-        title: 'No update available',
-        message: 'No update available',
-        detail: `You are at the latest version ${version.version}.`,
+        buttons: ['تأیید'],
+        title: 'به‌روزرسانی تازه‌ای نیست',
+        message: 'به‌روزرسانی تازه‌ای نیست',
+        detail: `شما آخرین نسخه (${version.version}) را دارید.`,
       } as any, (() => {
         this._setState('idle');
       }) as any);
@@ -140,9 +140,9 @@ export class UpdateManager {
     } else {
       electron.dialog.showMessageBox({
         type: 'warning',
-        buttons: ['OK'],
-        title: 'Update Error',
-        message: 'There was an error checking for updates.',
+        buttons: ['تأیید'],
+        title: 'خطا در به‌روزرسانی',
+        message: 'هنگام بررسی به‌روزرسانی خطایی رخ داد.',
         detail: err.message,
       } as any, (() => {
         this._setState('idle');
@@ -161,13 +161,13 @@ export class UpdateManager {
     // The user may have switched to another task in Grist; we need to ask again.
     electron.dialog.showMessageBox({
       type: 'info',
-      buttons: ['Relaunch to Update', 'Update Later'],
+      buttons: ['راه‌اندازی دوباره برای به‌روزرسانی', 'بعداً'],
       defaultId: 0,
       cancelId: 1,
       noLink: true,
-      title: 'Update Ready',
-      message: 'The update is ready to be installed',
-      detail: `Would you like to finish updating to Grist ${info.version} now?`,
+      title: 'به‌روزرسانی آماده است',
+      message: 'به‌روزرسانی برای نصب آماده است',
+      detail: `می‌خواهید به‌روزرسانی به Grist ${info.version} را همین حالا تمام کنید؟`,
     } as any, ((index: any) => {
       if (index === 0) {
         this.autoUpdater.quitAndInstall();
